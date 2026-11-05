@@ -27,7 +27,7 @@ export HUB_PORT="${TRIM_SERVICE_PORT:-8900}"
 export HUB_UI="${TRIM_APPDEST}/ui"
 export HUB_DATA="${TRIM_PKGVAR}"
 export HUB_ETC="${TRIM_PKGETC}"
-export HUB_SOCK="${TRIM_APPDEST}/fnoshub.sock"
+export HUB_SOCK="${TRIM_APPDEST}/xiaoai-console.sock"
 export PYTHONUNBUFFERED=1
 
 CMD="${PY} ${TRIM_APPDEST}/server/hub.py"

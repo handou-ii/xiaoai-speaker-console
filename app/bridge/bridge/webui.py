@@ -29,7 +29,7 @@ OC_CONFIG = os.environ.get("OC_CONFIG", "/oc/openclaw.json")
 OC_LOG = os.environ.get("OC_LOG", "/oc/gateway.log")
 # 这段是给 OpenClaw 侧「宿主进程」跑 MCP 用的路径，随应用装在 @appcenter 下
 MCP_HOST_SCRIPT = os.environ.get(
-    "MCP_HOST_SCRIPT", "/vol1/@appcenter/fnoshub/bridge/mcp_server.py")
+    "MCP_HOST_SCRIPT", "/vol1/@appcenter/xiaoai-console/bridge/mcp_server.py")
 
 
 def _need_json(fn):

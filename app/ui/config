@@ -1,16 +1,16 @@
 {
     ".url": {
-        "fnoshub.main": {
+        "xiaoai-console.main": {
             "title": "小爱音响控制台",
             "desc": "小爱控制台 · OpenClaw 网关 · 独立窗口",
             "icon": "images/icon_{0}.png",
             "type": "iframe",
             "protocol": "http",
             "port": "",
-            "url": "/app/fnoshub/",
+            "url": "/app/xiaoai-console/",
             "allUsers": true,
-            "gatewaySocket": "fnoshub.sock",
-            "gatewayPrefix": "/app/fnoshub"
+            "gatewaySocket": "xiaoai-console.sock",
+            "gatewayPrefix": "/app/xiaoai-console"
         }
     }
 }

@@ -20,14 +20,14 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, urlsplit, unquote
 
-VERSION = "1.4.13"
+VERSION = "1.5.0"
 
 PORT = int(os.environ.get("HUB_PORT") or 8900)
-# 桌面 iframe 走平台网关时挂在 /app/fnoshub/ 前缀下；直连端口则挂在 /
-GATEWAY_PREFIX = "/app/fnoshub"
-# 网关套接字：应用根目录/fnoshub.sock（ui/config 的 gatewaySocket 指向它）
+# 桌面 iframe 走平台网关时挂在 /app/xiaoai-console/ 前缀下；直连端口则挂在 /
+GATEWAY_PREFIX = "/app/xiaoai-console"
+# 网关套接字：应用根目录/xiaoai-console.sock（ui/config 的 gatewaySocket 指向它）
 SOCK = os.environ.get("HUB_SOCK") or os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "fnoshub.sock"))
+    os.path.join(os.path.dirname(__file__), "..", "xiaoai-console.sock"))
 UI_DIR = os.path.abspath(os.environ.get("HUB_UI")
                          or os.path.join(os.path.dirname(__file__), "..", "ui"))
 DATA_DIR = os.path.abspath(os.environ.get("HUB_DATA")
@@ -106,7 +106,7 @@ def probe(url, timeout=3.0):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "fnos-hub/" + VERSION
+    server_version = "xiaoai-console/" + VERSION
     protocol_version = "HTTP/1.1"
 
     # ---------- 工具 ----------
@@ -118,7 +118,7 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _norm(path):
-        """去掉网关前缀 /app/fnoshub（网关剥没剥都要兼容）"""
+        """去掉网关前缀 /app/xiaoai-console（网关剥没剥都要兼容）"""
         if path == GATEWAY_PREFIX:
             return "/"
         if path.startswith(GATEWAY_PREFIX + "/"):
@@ -242,7 +242,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class UnixHTTPServer(ThreadingHTTPServer):
-    """在 unix 套接字上提供 HTTP，供平台网关转发 /app/fnoshub/ 进来"""
+    """在 unix 套接字上提供 HTTP，供平台网关转发 /app/xiaoai-console/ 进来"""
     address_family = socket.AF_UNIX
 
     def server_bind(self):

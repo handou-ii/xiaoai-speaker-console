@@ -31,7 +31,7 @@ tests/            # 授权轮换的桩测试
 需要官方的 `fnpack`：
 
 ```bash
-fnpack build                 # 产物 fnoshub.fpk
+fnpack build                 # 产物 xiaoai-console.fpk（对外分发时改名带版本号）
 ```
 
 桥接镜像不进仓库，打包前先构建并导出：
@@ -44,16 +44,16 @@ docker save xiaoai-bridge:latest | gzip -6 > app/bridge/img.tar.gz
 ## 安装
 
 ```bash
-appcenter-cli install-fpk fnoshub.fpk -v 1
-appcenter-cli start fnoshub
+appcenter-cli install-fpk xiaoai-console.fpk -v 1
+appcenter-cli start xiaoai-console
 ```
 
 控制台默认 8900，桥接默认 8790。已装同 appname 的应用时，本地包只能卸载重装。
 
 ## 数据位置
 
-- 应用目录：`/vol1/@appcenter/fnoshub`
-- 运行数据：`/vol1/@apphome/fnoshub`（登录态 `bridge/conf/.mi.token`、根凭据 `bridge/conf/auth.json`、配置 `bridge/conf/config.json`）
+- 应用目录：`/vol1/@appcenter/xiaoai-console`
+- 运行数据：`/vol1/@apphome/xiaoai-console`（登录态 `bridge/conf/.mi.token`、根凭据 `bridge/conf/auth.json`、配置 `bridge/conf/config.json`）
 - 这些凭据只留在本机，不随安装包分发。
 
 ## 许可

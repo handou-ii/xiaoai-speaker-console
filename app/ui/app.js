@@ -10,7 +10,7 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-  // 可能挂在 /app/fnoshub/ 网关前缀下，也可能直接以 / 打开
+  // 可能挂在 /app/xiaoai-console/ 网关前缀下，也可能直接以 / 打开
   const BASE = location.pathname.replace(/index\.html$/, '').replace(/\/?$/, '/');
   const bridgeUrl = () => `http://${location.hostname}:8790/`;
 
