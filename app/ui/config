@@ -1,0 +1,16 @@
+{
+    ".url": {
+        "fnoshub.main": {
+            "title": "小爱音响控制台",
+            "desc": "小爱控制台 · OpenClaw 网关 · 独立窗口",
+            "icon": "images/icon_{0}.png",
+            "type": "iframe",
+            "protocol": "http",
+            "port": "",
+            "url": "/app/fnoshub/",
+            "allUsers": true,
+            "gatewaySocket": "fnoshub.sock",
+            "gatewayPrefix": "/app/fnoshub"
+        }
+    }
+}

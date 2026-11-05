@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>小爱音响控制台</title>
+<link rel="stylesheet" href="style.css?v=20261105-11">
+<link rel="icon" href="images/icon_64.png">
+</head>
+<body>
+
+<div class="shell">
+  <!-- 左轨：机架槽位 -->
+  <aside class="rail">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="3" width="14" height="18" rx="2.5"/><circle cx="12" cy="9" r="2.6"/><path d="M9 15h6M9 18h4"/>
+        </svg>
+      </span>
+      <span class="brand-text">
+        <b>小爱音响控制台</b>
+        <i>控制台 · 桥接 · 网关</i>
+      </span>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item" data-nav="overview">
+        <span class="nav-label">概览</span>
+        <i class="led" data-dot="overview"></i>
+      </button>
+      <button class="nav-item" data-nav="account">
+        <span class="nav-label">账号</span>
+        <i class="led" data-dot="account"></i>
+      </button>
+      <button class="nav-item" data-nav="xiaoai">
+        <span class="nav-label">小爱音响</span>
+        <i class="led" data-dot="xiaoai"></i>
+      </button>
+      <button class="nav-item" data-nav="openclaw">
+        <span class="nav-label">OpenClaw</span>
+        <i class="led" data-dot="openclaw"></i>
+      </button>
+    </nav>
+
+    <div class="rail-foot">
+      <span id="rail-host">—</span>
+      <span id="rail-ver" class="rail-ver">v—</span>
+    </div>
+  </aside>
+
+  <!-- 主区 -->
+  <main class="main">
+    <header class="topbar">
+      <div class="tb-left">
+        <h1 id="page-title">概览</h1>
+        <span class="tb-kicker" id="page-kicker">系统状态</span>
+      </div>
+      <div class="tb-right">
+        <span class="chip" title="小爱音箱"><i class="led" id="led-speaker"></i>音箱</span>
+        <span class="chip" title="小爱桥接 8790"><i class="led" id="led-bridge"></i>桥接</span>
+        <span class="chip" title="OpenClaw 网关"><i class="led" id="led-gw"></i>网关</span>
+        <button class="icon-btn" id="btn-refresh" title="刷新当前页" aria-label="刷新">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11A8 8 0 1 0 18 17"/><path d="M20 5v6h-6"/></svg>
+        </button>
+        <span class="stamp" id="stamp">—</span>
+      </div>
+    </header>
+
+    <div id="view" class="view"></div>
+  </main>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="app.js?v=20261105-11"></script>
+</body>
+</html>

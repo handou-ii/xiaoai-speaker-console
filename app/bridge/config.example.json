@@ -1,0 +1,101 @@
+{
+  "mi": {
+    "account": "",
+    "password": "",
+    "token_store": "./conf/.mi.token"
+  },
+  "device": {
+    "device_id": "",
+    "hardware": "",
+    "name": ""
+  },
+  "listen": {
+    "enabled": true,
+    "poll_sec": 0.5
+  },
+  "wake": {
+    "names": [
+      "播放本地",
+      "本地纳斯",
+      "本地歌曲"
+    ],
+    "patterns": [],
+    "bare_commands": false,
+    "strip_after_match": true
+  },
+  "openclaw": {
+    "enabled": true,
+    "base_url": "",
+    "token": "",
+    "agent_id": "",
+    "session_key": "",
+    "model": "",
+    "timeout": 0,
+    "system_prefix": "你正在通过小爱音箱与用户语音对话。回答必须口语化、不超过60字、先给结论、不要用 markdown、不要输出列表和代码。"
+  },
+  "router": {
+    "openclaw_mode": "fallback",
+    "openclaw_keywords": [
+      "nas",
+      "硬盘",
+      "磁盘",
+      "存储",
+      "空间",
+      "内存",
+      "cpu",
+      "温度",
+      "docker",
+      "容器",
+      "进程",
+      "服务",
+      "日志",
+      "系统",
+      "网络",
+      "ip",
+      "备份",
+      "下载",
+      "任务",
+      "相册",
+      "文件",
+      "文件夹",
+      "目录",
+      "同步",
+      "关机",
+      "重启"
+    ],
+    "commands_file": "./conf/commands.json",
+    "wake_local_intents": false
+  },
+  "music": {
+    "roots": [],
+    "exts": [
+      ".mp3",
+      ".flac",
+      ".m4a",
+      ".wav",
+      ".ape",
+      ".ogg",
+      ".wma"
+    ],
+    "mode": "shuffle",
+    "index_cache": "./conf/music_index.json",
+    "watchdog": {
+      "interval": 12,
+      "grace": 20
+    }
+  },
+  "log_file": "./logs/bridge.log",
+  "speak": {
+    "tts_mode": "edge",
+    "edge_voice": "zh-CN-XiaoyiNeural",
+    "max_seg_chars": 60,
+    "tts_timeout": 12,
+    "static_dir": "./media",
+    "public_base": "",
+    "confirm_audio": ""
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8790
+  }
+}

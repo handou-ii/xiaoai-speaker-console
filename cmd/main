@@ -1,0 +1,273 @@
+#!/bin/bash
+# 小爱音响控制台 · 启停脚本
+# status 约定：exit 0 = 运行中，exit 3 = 未运行
+#
+# 本应用包含两部分：
+#   1. 控制台本体 hub.py（宿主 python 进程，${TRIM_SERVICE_PORT:-8900}）
+#   2. 小爱桥接容器 xiaoai-bridge（docker，端口映射 8790:8790）
+# start 两件一起起，stop 两件一起停。
+
+LOG_FILE="${TRIM_PKGVAR}/info.log"
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+
+BRIDGE_NAME="xiaoai-bridge"
+BRIDGE_IMG="xiaoai-bridge:latest"
+BRIDGE_DATA="${TRIM_PKGVAR}/bridge"
+BRIDGE_SRC="${TRIM_APPDEST}/bridge"
+BRIDGE_PORT="8790"
+FORWARD_PID="${TRIM_PKGVAR}/forward.pid"
+
+mkdir -p "${TRIM_PKGVAR}" "${TRIM_PKGETC}" "${BRIDGE_DATA}/conf" "${BRIDGE_DATA}/media" "${BRIDGE_DATA}/logs" 2>/dev/null
+
+PY="$(command -v python3 || echo /usr/bin/python3)"
+DOCKER="$(command -v docker 2>/dev/null || true)"
+
+# 运行参数：端口、静态资源目录、数据目录
+export HUB_PORT="${TRIM_SERVICE_PORT:-8900}"
+export HUB_UI="${TRIM_APPDEST}/ui"
+export HUB_DATA="${TRIM_PKGVAR}"
+export HUB_ETC="${TRIM_PKGETC}"
+export HUB_SOCK="${TRIM_APPDEST}/fnoshub.sock"
+export PYTHONUNBUFFERED=1
+
+CMD="${PY} ${TRIM_APPDEST}/server/hub.py"
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
+}
+
+check_process() {
+    local pid=$1
+    if kill -0 "${pid}" 2>/dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# ---------------- 桥接容器 ----------------
+
+# 宿主机局域网 IP：音箱要按这个地址回来拉音频，容器里的 IP 它访问不到
+lan_ip() {
+    local ip
+    ip="$(ip route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+    [ -n "${ip}" ] || ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    [ -n "${ip}" ] || ip="127.0.0.1"
+    printf '%s' "${ip}"
+}
+
+docker_gw() {
+    local gw
+    gw="$("${DOCKER}" network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null)"
+    [ -n "${gw}" ] || gw="172.17.0.1"
+    printf '%s' "${gw}"
+}
+
+bridge_running() {
+    [ -n "${DOCKER}" ] || return 1
+    "${DOCKER}" inspect -f '{{.State.Running}}' "${BRIDGE_NAME}" 2>/dev/null | grep -q true
+}
+
+# OpenClaw 网关只听 127.0.0.1，容器里够不到；在 docker 网桥网关上开一个转发
+forward_up() {
+    [ -n "${DOCKER}" ] || return 0
+    [ -f "${TRIM_APPDEST}/server/forward.py" ] || return 0
+
+    if [ -r "${FORWARD_PID}" ] && kill -0 "$(head -n 1 "${FORWARD_PID}" | tr -d '[:space:]')" 2>/dev/null; then
+        return 0
+    fi
+
+    local gw
+    gw="$(docker_gw)"
+    bash -c "${PY} ${TRIM_APPDEST}/server/forward.py --listen ${gw} --port 48670 --target 127.0.0.1 --target-port 48670" >> "${LOG_FILE}" 2>&1 &
+    printf "%s" "$!" > "${FORWARD_PID}"
+    log_msg "Forwarder up ${gw}:48670 -> 127.0.0.1:48670"
+    return 0
+}
+
+forward_down() {
+    if [ -r "${FORWARD_PID}" ]; then
+        local pid
+        pid="$(head -n 1 "${FORWARD_PID}" | tr -d '[:space:]')"
+        [ -n "${pid}" ] && kill -TERM "${pid}" 2>/dev/null
+        rm -f "${FORWARD_PID}"
+    fi
+    return 0
+}
+
+bridge_up() {
+    if [ -z "${DOCKER}" ]; then
+        log_msg "docker 不可用，跳过桥接容器"
+        return 0
+    fi
+
+    if bridge_running; then
+        return 0
+    fi
+
+    # 容器存在但没跑（或挂载路径已过期）→ 重建，保证卷指向当前应用目录
+    if "${DOCKER}" inspect "${BRIDGE_NAME}" >/dev/null 2>&1; then
+        "${DOCKER}" rm -f "${BRIDGE_NAME}" >> "${LOG_FILE}" 2>&1
+    fi
+
+    local host_ip
+    host_ip="$(lan_ip)"
+
+    # 用端口映射而不是 --network host：飞牛 Docker 页才会显示 8790 端口入口
+    local args=(
+        -d
+        --name "${BRIDGE_NAME}"
+        --restart unless-stopped
+        --add-host=host.docker.internal:host-gateway
+        -p "${BRIDGE_PORT}:${BRIDGE_PORT}"
+        -e TZ=Asia/Shanghai
+        -e "XIAOAI_PUBLIC_BASE=http://${host_ip}:${BRIDGE_PORT}"
+        -e "XIAOAI_HOST_IP=${host_ip}"
+        -v "${BRIDGE_DATA}/config.json:/app/config.json"
+        -v "${BRIDGE_DATA}/conf:/app/conf"
+        -v "${BRIDGE_DATA}/media:/app/media"
+        -v "${BRIDGE_DATA}/logs:/app/logs"
+        -v "${BRIDGE_SRC}/bridge:/app/bridge:ro"
+        -v "${BRIDGE_SRC}/web:/app/web:ro"
+    )
+
+    # 曲库目录：整卷只读挂载。界面里加任意路径都能直接生效，不用改挂载重建容器
+    local v
+    for v in /vol1 /vol2 /vol3 /vol4 /vol01 /vol02; do
+        [ -d "$v" ] && args+=(-v "${v}:${v}:ro")
+    done
+
+    # OpenClaw 侧挂载，未装 OpenClaw 时跳过
+    #   .openclaw 整目录可写：界面里"切换后端模型"要改 openclaw.json，
+    #   挂单个文件 + :ro 会 Read-only file system；整目录挂载还能避免 OpenClaw
+    #   自己重写（rename 换 inode）后我们的写入落到旧 inode 上。
+    local oc_home="/vol1/@apphome/trim.openclaw/data/home/.openclaw"
+    local oc_log="/vol1/@apphome/trim.openclaw/data/openclaw/gateway.log"
+    [ -d "${oc_home}" ] && args+=(-v "${oc_home}:/oc")
+    [ -f "${oc_log}" ] && args+=(-v "${oc_log}:/oc/gateway.log:ro")
+
+    # 挂载清单指纹：挂载参数变了（升级换了路径/权限）就重建容器，
+    # 否则老容器会一直带着过期挂载跑
+    local sig
+    sig="$(printf '%s\n' "${args[@]}" | md5sum | awk '{print $1}')"
+    local sig_file="${BRIDGE_DATA}/.mounts.sig"
+    if [ -f "${sig_file}" ] && [ "$(cat "${sig_file}" 2>/dev/null)" != "${sig}" ] \
+        && "${DOCKER}" inspect "${BRIDGE_NAME}" >/dev/null 2>&1; then
+        log_msg "桥接容器挂载已变化，重建"
+        "${DOCKER}" rm -f "${BRIDGE_NAME}" >> "${LOG_FILE}" 2>&1
+    fi
+    printf '%s' "${sig}" > "${sig_file}" 2>/dev/null
+
+    log_msg "Starting bridge container ${BRIDGE_IMG}"
+    "${DOCKER}" run "${args[@]}" "${BRIDGE_IMG}" >> "${LOG_FILE}" 2>&1
+    sleep 2
+    if bridge_running; then
+        log_msg "Bridge container up"
+    else
+        log_msg "Bridge container 启动失败，详见 ${BRIDGE_DATA}/logs/bridge.log 与 ${LOG_FILE}"
+    fi
+    return 0
+}
+
+bridge_down() {
+    forward_down
+    [ -n "${DOCKER}" ] || return 0
+    if "${DOCKER}" inspect "${BRIDGE_NAME}" >/dev/null 2>&1; then
+        log_msg "Stopping bridge container"
+        "${DOCKER}" stop -t 10 "${BRIDGE_NAME}" >> "${LOG_FILE}" 2>&1
+    fi
+    return 0
+}
+
+# ---------------- 控制台本体 ----------------
+
+status() {
+    if [ -f "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if check_process "${pid}"; then
+            return 0
+        else
+            rm -f "${PID_FILE}"
+        fi
+    fi
+    return 1
+}
+
+start_process() {
+    if status; then
+        bridge_up
+        forward_up
+        return 0
+    fi
+
+    if [ ! -f "${TRIM_APPDEST}/server/hub.py" ]; then
+        echo "程序文件缺失：${TRIM_APPDEST}/server/hub.py，请重新安装应用。" > "${TRIM_TEMP_LOGFILE}"
+        exit 1
+    fi
+
+    log_msg "Starting: ${CMD}"
+    bash -c "${CMD}" >> "${LOG_FILE}" 2>&1 &
+    printf "%s" "$!" > "${PID_FILE}"
+
+    # 给进程一点启动时间，立刻失败也算启动失败
+    sleep 1
+    pid=$(cat "${PID_FILE}" | tr -d '[:space:]')
+    if ! check_process "${pid}"; then
+        echo "服务启动失败，请查看日志：${LOG_FILE}" > "${TRIM_TEMP_LOGFILE}"
+        rm -f "${PID_FILE}"
+        exit 1
+    fi
+    log_msg "Started pid=${pid} port=${HUB_PORT}"
+
+    bridge_up
+    forward_up
+    return 0
+}
+
+stop_process() {
+    log_msg "Stopping process ..."
+    bridge_down
+
+    if [ -r "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if ! check_process "${pid}"; then
+            rm -f "${PID_FILE}"
+            return 0
+        fi
+
+        kill -TERM "${pid}" >> "${LOG_FILE}" 2>&1
+
+        local count=0
+        while check_process "${pid}" && [ $count -lt 10 ]; do
+            sleep 1
+            count=$((count + 1))
+        done
+
+        if check_process "${pid}"; then
+            kill -KILL "${pid}"
+            sleep 1
+        fi
+        rm -f "${PID_FILE}"
+    fi
+
+    return 0
+}
+
+case $1 in
+start)
+    start_process
+    ;;
+stop)
+    stop_process
+    ;;
+status)
+    if status; then
+        exit 0
+    else
+        exit 3
+    fi
+    ;;
+*)
+    exit 1
+    ;;
+esac

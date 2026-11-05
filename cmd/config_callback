@@ -1,0 +1,10 @@
+#!/bin/bash
+# 配置变更后：重启服务让新环境变量生效
+
+actual="/var/apps/${TRIM_APPNAME}/cmd/main"
+if [ -x "$actual" ]; then
+    "$actual" stop >/dev/null 2>&1
+    "$actual" start >/dev/null 2>&1
+fi
+
+exit 0

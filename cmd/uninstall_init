@@ -1,0 +1,9 @@
+#!/bin/bash
+# 卸载前：先停掉进程，避免残留
+
+actual="/var/apps/${TRIM_APPNAME}/cmd/main"
+if [ -x "$actual" ]; then
+    "$actual" stop >/dev/null 2>&1
+fi
+
+exit 0

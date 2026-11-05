@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>小爱音箱控制台</title>
+<link rel="stylesheet" href="/ui/style.css?v=20261105c">
+<script>
+/* 被飞牛控制台以 ?embed=1 嵌入时，隐藏与控制台重复的 OpenClaw 卡（单独打开 8790 不受影响） */
+try {
+  if (new URLSearchParams(location.search).get('embed') === '1') {
+    document.documentElement.classList.add('embed');
+  }
+} catch (e) {}
+</script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23100e0d'/><rect x='6' y='9' width='3' height='14' fill='%23ffa53d'/><rect x='14' y='5' width='3' height='22' fill='%23ffa53d'/><rect x='22' y='12' width='3' height='11' fill='%23a86a28'/></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">
+      <!-- 三条推子：机架调音台的骨架图形 -->
+      <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-linecap="round">
+        <path d="M6.5 4v16M12 4v16M17.5 4v16" stroke-width="1.2" stroke-opacity=".35"/>
+        <path d="M3.6 9.5h5.8M9.1 15h5.8M14.6 7.5h5.8" stroke-width="2"/>
+      </svg>
+    </span>
+    <div class="brand-text">
+      <b>小爱音箱控制台</b>
+      <small id="uptime">连接中…</small>
+    </div>
+  </div>
+
+  <div class="badges">
+    <span class="badge" id="badge-device" data-state="unknown">
+      <i class="dot"></i><span>设备</span>
+    </span>
+    <span class="badge" id="badge-library"><i class="dot"></i><span>曲库 —</span></span>
+    <span class="badge" id="badge-account"><i class="dot"></i><span>账号</span></span>
+    <span class="badge" id="badge-openclaw"><i class="dot"></i><span>后台</span></span>
+    <button class="icon-btn" id="btn-refresh" title="刷新">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <path d="M20 11a8 8 0 1 0-2.3 5.6"/><path d="M20 5v6h-6"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ========== 左列 ========== -->
+  <div class="col">
+
+    <!-- 播放器 -->
+    <section class="card player" id="card-player" data-ru="RU-01">
+      <div class="player-main">
+        <div class="disc" id="disc">
+          <svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor"><circle cx="12" cy="12" r="3.2"/><path d="M12 2a10 10 0 0 0-9.2 6.1l1.9.8A8 8 0 0 1 12 4a8 8 0 1 1-8 8H2a10 10 0 1 0 10-10z"/></svg>
+        </div>
+        <div class="player-info">
+          <div class="now-title" id="now-title">未在播放</div>
+          <div class="now-meta" id="now-meta">选一首，或对小爱说「播放本地 晴天」</div>
+          <div class="progress" id="progress-row" style="display:none">
+            <span class="progress-label">队列</span>
+            <div class="progress-bar" title="队列播放位置"><i id="progress-fill"></i></div>
+            <span id="queue-pos">—</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="player-controls">
+        <button class="ctrl" id="btn-prev" title="上一首">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M7 6h2v12H7zM19 6v12L9.5 12z"/></svg>
+        </button>
+        <button class="ctrl primary" id="btn-playpause" title="播放 / 暂停">
+          <svg id="ico-pause" viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5h3v14H8zM13 5h3v14h-3z"/></svg>
+          <svg id="ico-play" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" style="display:none"><path d="M8 5l11 7-11 7z"/></svg>
+        </button>
+        <button class="ctrl" id="btn-next" title="下一首">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M15 6h2v12h-2zM5 6v12l9.5-6z"/></svg>
+        </button>
+        <button class="ctrl" id="btn-stop" title="停止">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
+        </button>
+
+        <div class="modegroup" id="mode-group">
+          <button class="modebtn" data-mode="seq" title="按列表顺序，放完停">顺序</button>
+          <button class="modebtn" data-mode="shuffle" title="随机打乱">随机</button>
+          <button class="modebtn" data-mode="loop" title="放完从头再来">循环</button>
+        </div>
+
+        <div class="volume">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 9v6h4l5 4V5L8 9H4z"/></svg>
+          <input type="range" id="volume" min="0" max="100" value="30" step="1">
+          <span class="volume-val" id="volume-val">—</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 队列 -->
+    <section class="card queue" data-ru="RU-02">
+      <div class="card-head">
+        <h2>播放队列</h2>
+        <span class="tag" id="queue-total">0 首</span>
+      </div>
+      <div class="list" id="queue-list">
+        <div class="empty">队列为空</div>
+      </div>
+    </section>
+
+    <!-- 曲库 -->
+    <section class="card library" data-ru="RU-03">
+      <div class="card-head">
+        <h2>本地曲库</h2>
+        <div class="head-actions">
+          <button class="link-btn" id="btn-roots-toggle">音乐路径</button>
+          <button class="link-btn" id="btn-rescan">重建索引</button>
+        </div>
+      </div>
+
+      <div class="roots" id="roots-panel" hidden>
+        <div class="list compact" id="roots-list"></div>
+        <div class="addrow">
+          <input id="root-input" placeholder="/vol1/1000/音乐文件">
+          <button class="mini-btn" id="btn-add-root">添加</button>
+        </div>
+        <p class="hint" id="roots-hint">填 NAS 绝对路径，加完立刻索引。例：/vol1/1000/音乐文件</p>
+      </div>
+
+      <div class="searchbar">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input id="search" placeholder="搜歌手 / 歌名，回车播放" autocomplete="off">
+        <button class="mini-btn" id="btn-play-search">播放</button>
+      </div>
+      <div class="chips" id="artist-chips"></div>
+      <div class="list compact" id="search-results">
+        <div class="empty">输入关键词搜索</div>
+      </div>
+    </section>
+
+    <!-- OpenClaw -->
+    <section class="card openclaw" data-ru="RU-04">
+      <div class="card-head">
+        <h2>OpenClaw 网关</h2>
+        <span class="tag" id="oc-tag">未配置</span>
+      </div>
+      <p class="hint">叫到触发词，整句丢给它；本地指令不走网关，断网照用。</p>
+
+      <div class="kv" id="oc-info"></div>
+
+      <details class="fold" open>
+        <summary>网关设置</summary>
+        <div class="field"><label>地址</label>
+          <div class="row-inline">
+            <input id="oc-base" placeholder="http://127.0.0.1:48670">
+            <button class="mini-btn" id="btn-oc-discover">自动识别</button>
+          </div>
+          <div class="hint" id="oc-gateways"></div>
+        </div>
+        <div id="oc-more" hidden>
+        <div class="field"><label>Token</label><input id="oc-token" placeholder="留空表示不修改"></div>
+        <div class="field"><label>Agent</label><input id="oc-agent" placeholder="main"></div>
+        <div class="field"><label>会话</label>
+          <div class="row-inline">
+            <select id="oc-session"></select>
+            <button class="mini-btn" id="btn-oc-new-session">新增</button>
+          </div>
+          <input id="oc-session-new" placeholder="新会话 key，如 xiaoai:study" style="display:none;margin-top:6px">
+        </div>
+        <div class="field"><label>后端模型</label>
+          <div class="row-inline">
+            <select id="oc-backend"></select>
+          </div>
+          <div class="hint" id="oc-backend-hint">换它会写回 openclaw.json，网关几秒内自动热加载</div>
+        </div>
+
+        <div class="field"><label>超时</label><input id="oc-timeout" type="number" value="0" min="0" max="600">
+          <span class="hint">0 = 不限制，跑完由它自己播报</span>
+        </div>
+        <div class="field"><label>启用</label>
+          <select id="oc-enabled"><option value="1">启用</option><option value="0">关闭（纯本地）</option></select>
+        </div>
+        </div>
+        <div class="btnrow">
+          <button class="mini-btn accent" id="btn-oc-save">保存</button>
+          <button class="mini-btn" id="btn-oc-test">测试连通</button>
+          <span class="hint" id="oc-err"></span>
+        </div>
+      </details>
+
+      <details class="fold" open>
+        <summary>唤醒与触发</summary>
+        <div class="field"><label>触发词</label>
+          <input id="rt-wakes" placeholder="让小龙虾, 跟小龙虾说">
+          <div class="hint">叫到这些词，整句转给 OpenClaw；可写多个，逗号分隔</div>
+        </div>
+        <div class="btnrow">
+          <button class="mini-btn accent" id="btn-rt-save">保存</button>
+          <span class="hint" id="rt-err"></span>
+        </div>
+        <p class="hint">这套词只管「转给 agent」，和右边「唤醒词」（只管本机执行）是两条线，互不影响。</p>
+      </details>
+
+      <details class="fold">
+        <summary>MCP 工具（让 OpenClaw 反向调用音箱）</summary>
+        <div class="hint" id="mcp-state">检查中…</div>
+        <div class="tools" id="mcp-tools"></div>
+        <pre class="code" id="mcp-snippet"></pre>
+      </details>
+
+      <details class="fold" id="oc-log-fold" hidden>
+        <summary>网关日志</summary>
+        <pre class="code" id="oc-log">未读取</pre>
+      </details>
+    </section>
+
+  </div>
+
+  <!-- ========== 右列 ========== -->
+  <div class="col">
+
+    <!-- 小米账号 -->
+    <section class="card account" data-ru="RU-05">
+      <div class="card-head">
+        <h2>小米账号</h2>
+        <span class="tag" id="mi-tag">未登录</span>
+      </div>
+      <div class="kv" id="mi-info"></div>
+
+      <div class="btnrow">
+        <button class="mini-btn accent" id="btn-qr">扫码登录</button>
+        <button class="mini-btn" id="btn-pwd-toggle">账号密码</button>
+        <button class="mini-btn" id="btn-devices">设备列表</button>
+      </div>
+
+      <div class="qrbox" id="qr-box" hidden>
+        <div class="qrwrap" id="qr-svg"></div>
+        <div class="qrside">
+          <p id="qr-msg">用米家 App 扫码</p>
+          <p class="hint" id="qr-tip"></p>
+        </div>
+      </div>
+
+      <div class="pwdbox" id="pwd-box" hidden>
+        <input id="mi-account" placeholder="小米账号（手机号/邮箱）">
+        <input id="mi-password" type="password" placeholder="密码">
+        <button class="mini-btn" id="btn-pwd-login">登录</button>
+        <p class="hint">密码登录常被小米风控拦截，扫码更稳。</p>
+      </div>
+
+      <div class="list compact" id="device-list" hidden></div>
+    </section>
+
+    <!-- 唤醒词 -->
+    <section class="card wake" data-ru="RU-06">
+      <div class="card-head">
+        <h2>唤醒词</h2>
+        <span class="tag" id="wake-tag">—</span>
+      </div>
+      <p class="hint">先说「小爱同学」，再说这里的名字，后面的内容才归本机。加几个都行，命中一个就生效。</p>
+
+      <label class="chk" title="开启后，只说「小爱同学，播放纯音乐歌曲」也能命中，但只对自定义指令生效">
+        <input type="checkbox" id="wake-bare">
+        <span>不带唤醒词也响应自定义指令</span>
+      </label>
+
+      <div class="kwbox">
+        <div class="kwlist" id="wake-list"></div>
+        <div class="kwadd">
+          <input id="wake-input" placeholder="加一个名字，如 播放本地、本地歌曲，回车或点「添加」">
+          <button class="mini-btn" id="btn-add-wake" type="button">添加</button>
+        </div>
+      </div>
+
+      <details class="fold">
+        <summary>高级：正则唤醒词</summary>
+        <div class="kwbox">
+          <div class="kwlist" id="wake-pat-list"></div>
+          <div class="kwadd">
+            <input id="wake-pat-input" placeholder="一条一个正则，如 小(龙|笼)虾">
+            <button class="mini-btn" id="btn-add-wake-pat" type="button">添加</button>
+          </div>
+        </div>
+        <p class="hint">名字覆盖不了时才用正则，比如要匹配「你帮我问问后台」。留空即可。</p>
+      </details>
+
+      <div class="btnrow">
+        <button class="mini-btn accent" id="btn-wake-save">保存</button>
+        <span class="hint" id="wake-err"></span>
+      </div>
+
+      <div class="routetest">
+        <input id="wake-test-text" placeholder="试一句：播放本地歌曲 晴天">
+        <button class="mini-btn" id="btn-wake-test">测分流</button>
+        <button class="mini-btn" id="btn-wake-run" title="真的播报并放歌">真跑</button>
+      </div>
+      <div class="routeout" id="wake-out"></div>
+
+    </section>
+
+    <section class="card commands" data-ru="RU-07">
+      <div class="card-head">
+        <h2>自定义固定指令</h2>
+        <button class="link-btn" id="btn-cmd-new">+ 新建</button>
+      </div>
+      <p class="hint">命中就本机直接做，不过网关。播放类先出声再起播。</p>
+      <div class="list compact" id="cmd-list"><div class="empty">还没有自定义指令</div></div>
+
+      <div class="cmdedit" id="cmd-editor" hidden>
+        <div class="field"><label>名称</label><input id="cmd-name" placeholder="播放回忆"></div>
+        <div class="field field-kw">
+          <label>触发词</label>
+          <div class="kwbox">
+            <div class="kwlist" id="cmd-pattern-list"></div>
+            <div class="kwadd">
+              <input id="cmd-patterns" placeholder="输入一个词，回车或点「添加」，可加多个">
+              <button class="mini-btn" id="btn-add-pattern" type="button">添加</button>
+            </div>
+          </div>
+        </div>
+        <div class="field"><label>匹配</label>
+          <select id="cmd-match">
+            <option value="contains">包含</option>
+            <option value="exact">完全一致</option>
+            <option value="startswith">开头匹配</option>
+            <option value="regex">正则</option>
+          </select>
+        </div>
+        <div class="field"><label>动作</label><select id="cmd-action"></select></div>
+        <div class="field" id="f-path"><label>文件夹</label><input id="cmd-path" placeholder="/vol1/1000/音乐文件/我的歌单"></div>
+        <div class="field" id="f-query"><label>搜索词</label><input id="cmd-query" placeholder="留空＝整个文件夹"></div>
+        <div class="field" id="f-mode"><label>模式</label>
+          <select id="cmd-mode">
+            <option value="seq">顺序</option>
+            <option value="shuffle">随机</option>
+            <option value="loop">循环</option>
+          </select>
+        </div>
+        <div class="field" id="f-limit"><label>上限</label><input id="cmd-limit" type="number" value="30" min="0" max="3000"><span class="hint">0＝整个文件夹</span></div>
+        <div class="field" id="f-value"><label>音量</label><input id="cmd-value" type="number" value="40" min="0" max="100"></div>
+        <div class="field" id="f-delta"><label>增减</label><input id="cmd-delta" type="number" value="10" min="-50" max="50"></div>
+        <div class="field" id="f-text"><label>要说的话</label><input id="cmd-text" placeholder="支持 {query} {now} {count}"></div>
+        <div class="field"><label>播报</label><input id="cmd-reply" placeholder="留空用默认话术"></div>
+        <div class="field"><label>优先级</label><input id="cmd-priority" type="number" value="50" min="0" max="999"></div>
+        <div class="btnrow">
+          <button class="mini-btn accent" id="btn-cmd-save">保存</button>
+          <button class="mini-btn" id="btn-cmd-cancel">取消</button>
+          <span class="hint" id="cmd-err"></span>
+        </div>
+      </div>
+
+      <div class="routetest">
+        <input id="route-text" placeholder="试一句：让小龙虾播放回忆">
+        <button class="mini-btn" id="btn-route-test">看谁处理</button>
+        <button class="mini-btn accent" id="btn-route-run">真跑一次</button>
+      </div>
+      <div class="routeout" id="route-out"></div>
+    </section>
+
+    <!-- iOS 快捷指令 -->
+    <section class="card shortcuts" data-ru="RU-08">
+      <div class="card-head">
+        <h2>iOS 快捷指令</h2>
+        <span class="tag">Siri 秒触发</span>
+      </div>
+
+      <div class="sc-template">
+        <div class="sc-t-row"><b>URL</b><code id="sc-base"></code></div>
+        <div class="sc-t-row"><b>方法</b><code>POST</code><b>请求体</b><code>JSON</code></div>
+        <div class="sc-t-row"><b>固定指令</b><code>{"name":"指令名"}</code></div>
+        <div class="sc-t-row"><b>控制类</b><code>{"name":"暂停播放"}</code></div>
+      </div>
+
+      <div class="list compact sc-list" id="sc-list"><div class="empty">还没有指令</div></div>
+    </section>
+
+    <!-- 最近交互 -->
+    <section class="card history" data-ru="RU-09">
+      <div class="card-head">
+        <h2>最近交互</h2>
+        <span class="tag" id="hist-count">—</span>
+      </div>
+      <div class="list log" id="history-list">
+        <div class="empty">还没有记录</div>
+      </div>
+    </section>
+
+  </div>
+
+  <footer class="rack-footer">
+    <span><b>XIAOAI BRIDGE</b> · 8790 · 本地曲库 + 机架控制</span>
+    <span>© 2026 HanDou · BUILD 1.3.5</span>
+  </footer>
+
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script src="/ui/app.js?v=20261105c"></script>
+</body>
+</html>

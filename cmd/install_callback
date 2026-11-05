@@ -1,0 +1,47 @@
+#!/bin/bash
+# 安装后：建数据目录 → 写默认配置 → 导入镜像
+#
+# 数据布局（在应用自己的目录里，卸载重装不丢）：
+#   ${TRIM_PKGVAR}/bridge/config.json   桥接主配置（首次安装由 config.example.json 复制）
+#   ${TRIM_PKGVAR}/bridge/conf/         小米 token、指令库、曲库索引
+#   ${TRIM_PKGVAR}/bridge/media/        TTS 缓存
+#   ${TRIM_PKGVAR}/bridge/logs/         桥接日志
+
+set -u
+
+DATA="${TRIM_PKGVAR}/bridge"
+APPDEST="${TRIM_APPDEST}"
+IMG="${APPDEST}/bridge/img.tar.gz"
+
+log() { echo "$1" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"; }
+
+mkdir -p "${TRIM_PKGVAR}" "${TRIM_PKGETC}" "${DATA}/conf" "${DATA}/media" "${DATA}/logs" 2>/dev/null
+chmod +x "${TRIM_APPDEST}/server/hub.py" 2>/dev/null
+
+# ---- 1. 默认配置：只在没有 config.json 时写入，绝不覆盖已配置过的 ----
+if [ ! -f "${DATA}/config.json" ]; then
+    cp -f "${APPDEST}/bridge/config.example.json" "${DATA}/config.json" 2>/dev/null \
+        && log "已写入默认 config.json"
+fi
+
+if [ -n "${TRIM_USERNAME:-}" ] && [ "${TRIM_USERNAME}" != "root" ]; then
+    chown -R "${TRIM_USERNAME}:${TRIM_GROUPNAME:-${TRIM_USERNAME}}" "${DATA}" "${TRIM_PKGETC}" 2>/dev/null
+fi
+
+# ---- 2. 导入桥接镜像（已有同 tag 镜像则跳过，重装更快）----
+if command -v docker >/dev/null 2>&1; then
+    if ! docker image inspect xiaoai-bridge:latest >/dev/null 2>&1; then
+        if [ -f "${IMG}" ]; then
+            log "正在导入桥接镜像（约 174MB）..."
+            if ! docker load -i "${IMG}" >> "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1; then
+                log "镜像导入失败：${IMG}"
+            fi
+        else
+            log "镜像文件缺失：${IMG}"
+        fi
+    fi
+else
+    log "未检测到 docker，跳过镜像导入"
+fi
+
+exit 0

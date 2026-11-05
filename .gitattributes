@@ -1,0 +1,7 @@
+# 仓库在 Windows 上开发、在 Linux 上运行：文本一律按 LF 落盘，
+# 否则 cmd/* 启停脚本会带 CRLF 在 NAS 上直接报错。
+* text=auto eol=lf
+
+*.PNG binary
+*.png binary
+*.ico binary

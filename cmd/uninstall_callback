@@ -1,0 +1,13 @@
+#!/bin/bash
+# 卸载后：停掉并删除桥接容器；镜像与数据保留
+#
+# 保留理由：
+#   - 镜像 174MB，留着重装免去 30~60s 的 docker load
+#   - ${TRIM_PKGVAR}/bridge 里是小米登录 token、曲库索引、TTS 缓存，删了要重新扫码
+# 想彻底清掉见 README 的「完全清理」。
+
+if command -v docker >/dev/null 2>&1; then
+    docker rm -f xiaoai-bridge >/dev/null 2>&1
+fi
+
+exit 0

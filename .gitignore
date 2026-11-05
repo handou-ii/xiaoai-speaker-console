@@ -1,0 +1,12 @@
+# 构建产物（fpk 与预打包镜像体积大，不进仓库）
+*.fpk
+app/bridge/img.tar.gz
+
+# Python
+__pycache__/
+*.py[cod]
+
+# 本地/系统杂项
+.DS_Store
+Thumbs.db
+*.log
