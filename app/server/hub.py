@@ -22,7 +22,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, urlsplit, unquote
 
-VERSION = "1.5.3"
+VERSION = "1.5.4"
 
 PORT = int(os.environ.get("HUB_PORT") or 8900)
 # 桌面 iframe 走平台网关时挂在 /app/xiaoai-console/ 前缀下；直连端口则挂在 /
@@ -60,11 +60,23 @@ def log(*a):
 # ---------------- 更新 ----------------
 APPNAME = "xiaoai-console"
 UPDATE_REPO = os.environ.get("HUB_UPDATE_REPO") or "handou-ii/xiaoai-speaker-console"
-# 只认这些目录里的安装包，避免任意路径被执行
-UPDATE_DIRS = [d for d in (
-    os.environ.get("HUB_UPDATE_DIR") or "/path/to/fpk-dir",
-    os.path.join(ETC_DIR, "update"),
-) if d]
+# 只认这些目录里的安装包，避免任意路径被执行。
+# 默认只有应用自己的 update 目录；想额外监看自己放安装包的地方，
+# 在 ${ETC_DIR}/update.dirs 里一行写一个路径（# 开头为注释），
+# 或用环境变量 HUB_UPDATE_DIR 指定（多个用冒号分隔）。这里不写死任何具体路径。
+def update_dirs():
+    dirs = [os.path.join(ETC_DIR, "update")]
+    raw = os.environ.get("HUB_UPDATE_DIR") or ""
+    try:
+        with open(os.path.join(ETC_DIR, "update.dirs"), encoding="utf-8") as f:
+            raw += "\n" + f.read()
+    except OSError:
+        pass
+    for line in raw.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and line not in dirs:
+            dirs.append(line)
+    return dirs
 # 状态与日志放 /tmp：升级要卸载应用，@appconf 下的文件在卸载/重装过程中不可靠
 UPDATE_WORK = os.environ.get("HUB_UPDATE_WORK") or "/tmp/xc-update"
 UPDATE_STATE = os.path.join(UPDATE_WORK, "state.json")
@@ -106,7 +118,7 @@ def fpk_info(path):
 
 def scan_local():
     seen, out = set(), []
-    for d in UPDATE_DIRS:
+    for d in update_dirs():
         try:
             names = os.listdir(d)
         except OSError:
@@ -155,7 +167,7 @@ def update_check():
     newer = [x for x in local if x.get("valid") and ver_key(x["version"]) > ver_key(VERSION)]
     gh = gh_latest()
     return {"ok": True, "current": VERSION, "repo": UPDATE_REPO,
-            "dirs": UPDATE_DIRS, "local": local[:10], "newer": newer[:5],
+            "dirs": update_dirs(), "local": local[:10], "newer": newer[:5],
             "best_local": newer[0] if newer else None, "github": gh,
             "has_update": bool(newer) or bool(gh.get("has_update")),
             "state": _read_state()}
@@ -259,7 +271,7 @@ def update_apply(obj):
     if src != "local":
         return {"ok": False, "error": "当前只支持安装本机目录里的安装包"}
     path = os.path.realpath(str(obj.get("path") or ""))
-    allowed = [os.path.realpath(d) for d in UPDATE_DIRS]
+    allowed = [os.path.realpath(d) for d in update_dirs()]
     if not any(path == a or path.startswith(a + os.sep) for a in allowed):
         return {"ok": False, "error": "安装包必须放在受信任目录内"}
     if not os.path.isfile(path):
