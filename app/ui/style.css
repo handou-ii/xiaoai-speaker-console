@@ -1021,3 +1021,61 @@ input[type=range]::-moz-range-thumb {
   .sc-k { width: 32px; font-size: 10.5px; }
   .sc-list { grid-template-columns: 1fr; max-height: none; }
 }
+
+/* ---------------- 更新 ----------------
+   按钮常驻在顶栏：无新版时是「已是最新」的灰态，有新版才用琥珀填充，
+   与「正在播放」共用同一支强调色，不引入新色。 */
+.btn.upd { gap: 5px; font-size: 11.5px; padding: 4px 9px; color: var(--text-2); }
+.btn.upd:hover { color: var(--text); }
+.btn.upd.hot {
+  color: #1b160e;
+  background: var(--amber);
+  border-color: var(--amber);
+}
+.btn.upd.hot:hover { background: var(--amber-hi); border-color: var(--amber-hi); }
+.btn.spin svg { animation: spin .8s linear infinite; }
+
+.mask {
+  position: fixed; inset: 0; z-index: 120;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  background: rgba(10, 9, 8, .62);
+  animation: fade .18s var(--ease) both;
+}
+.mask[hidden] { display: none; }
+.dlg {
+  width: min(480px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .6);
+  overflow: hidden;
+}
+.dlg-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.dlg-body { padding: 14px; }
+.dlg-rows { display: flex; flex-direction: column; gap: 8px; }
+.dlg-rows .kv {
+  display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px;
+  align-items: baseline; font-size: 12.5px;
+}
+.dlg-rows .kv em { font-style: normal; color: var(--text-3); }
+.dlg-rows .kv b { font-weight: 400; color: var(--text); word-break: break-all; }
+.dlg-rows .kv b.dim { color: var(--text-2); font-size: 11.5px; }
+.dlg-note {
+  margin: 14px 0 0; padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12px; line-height: 1.7; color: var(--text-3);
+}
+.dlg-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 13px;
+  border-top: 1px solid var(--line);
+  background: rgba(240, 232, 218, .015);
+}
+.dlg-status { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-3); }
+.dlg-status.bad { color: var(--bad); }

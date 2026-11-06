@@ -12,7 +12,9 @@ import json
 import os
 import posixpath
 import socket
+import subprocess
 import sys
+import tarfile
 import threading
 import time
 import urllib.error
@@ -20,7 +22,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, urlsplit, unquote
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 
 PORT = int(os.environ.get("HUB_PORT") or 8900)
 # 桌面 iframe 走平台网关时挂在 /app/xiaoai-console/ 前缀下；直连端口则挂在 /
@@ -53,6 +55,179 @@ MIME = {
 
 def log(*a):
     print("[hub]", *a, file=sys.stderr, flush=True)
+
+
+# ---------------- 更新 ----------------
+APPNAME = "xiaoai-console"
+UPDATE_REPO = os.environ.get("HUB_UPDATE_REPO") or "handou-ii/xiaoai-speaker-console"
+# 只认这些目录里的安装包，避免任意路径被执行
+UPDATE_DIRS = [d for d in (
+    os.environ.get("HUB_UPDATE_DIR") or "/path/to/fpk-dir",
+    os.path.join(ETC_DIR, "update"),
+) if d]
+UPDATE_WORK = os.path.join(ETC_DIR, "update")
+UPDATE_STATE = os.path.join(UPDATE_WORK, "state.json")
+UPDATE_LOG = os.path.join(UPDATE_WORK, "install.log")
+
+
+def ver_key(v):
+    """"1.5.1" -> (1, 5, 1)；非数字段按 0 处理"""
+    parts = []
+    for seg in str(v or "").strip().split("."):
+        digits = "".join(ch for ch in seg if ch.isdigit())
+        parts.append(int(digits or 0))
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def fpk_info(path):
+    """读 fpk 外层 manifest，取 appname / version，并带上文件大小与时间"""
+    info = {"path": path, "name": os.path.basename(path),
+            "size": os.path.getsize(path), "mtime": int(os.path.getmtime(path)),
+            "appname": "", "version": "", "valid": False}
+    try:
+        with tarfile.open(path, "r:gz") as tf:
+            f = tf.extractfile("manifest")
+            raw = f.read().decode("utf-8", "replace") if f else ""
+        meta = {}
+        for line in raw.splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, _, v = line.partition("=")
+                meta[k.strip()] = v.strip()
+        info["appname"] = meta.get("appname", "")
+        info["version"] = meta.get("version", "")
+        info["valid"] = (info["appname"] == APPNAME and bool(info["version"]))
+    except Exception as e:
+        info["error"] = type(e).__name__
+    return info
+
+
+def scan_local():
+    seen, out = set(), []
+    for d in UPDATE_DIRS:
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for n in names:
+            if not n.lower().endswith(".fpk"):
+                continue
+            p = os.path.join(d, n)
+            rp = os.path.realpath(p)
+            if rp in seen or not os.path.isfile(rp):
+                continue
+            seen.add(rp)
+            out.append(fpk_info(rp))
+    out.sort(key=lambda x: (ver_key(x.get("version")), x.get("mtime") or 0), reverse=True)
+    return out
+
+
+def gh_latest(timeout=8):
+    """查远端最新版本；私有仓库未授权时返回 404，按不可用处理"""
+    url = "https://api.github.com/repos/%s/releases/latest" % UPDATE_REPO
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "xiaoai-console/" + VERSION,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403, 404):
+            return {"ok": False, "error": "远端未开放（%d）" % e.code}
+        return {"ok": False, "error": "远端返回 %d" % e.code}
+    except Exception as e:
+        return {"ok": False, "error": "%s" % type(e).__name__}
+    tag = (d.get("tag_name") or "").lstrip("v")
+    assets = [a for a in (d.get("assets") or [])
+              if str(a.get("name") or "").lower().endswith(".fpk")]
+    a0 = assets[0] if assets else {}
+    return {"ok": True, "latest": tag, "name": d.get("name") or "",
+            "url": a0.get("browser_download_url") or "", "size": a0.get("size") or 0,
+            "notes": (d.get("body") or "")[:400],
+            "has_update": bool(tag) and ver_key(tag) > ver_key(VERSION)}
+
+
+def update_check():
+    local = scan_local()
+    newer = [x for x in local if x.get("valid") and ver_key(x["version"]) > ver_key(VERSION)]
+    gh = gh_latest()
+    return {"ok": True, "current": VERSION, "repo": UPDATE_REPO,
+            "dirs": UPDATE_DIRS, "local": local[:10], "newer": newer[:5],
+            "best_local": newer[0] if newer else None, "github": gh,
+            "has_update": bool(newer) or bool(gh.get("has_update")),
+            "state": _read_state()}
+
+
+def _write_state(obj):
+    try:
+        os.makedirs(UPDATE_WORK, exist_ok=True)
+        tmp = UPDATE_STATE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+        os.replace(tmp, UPDATE_STATE)
+    except Exception as e:
+        log("写更新状态失败: %s" % e)
+
+
+def _read_state():
+    try:
+        with open(UPDATE_STATE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"status": "idle"}
+
+
+def _install_worker(path, target):
+    # 先把 HTTP 响应送出去，再动应用；start_new_session 让安装进程在 hub 被杀后继续
+    time.sleep(1.5)
+    try:
+        os.makedirs(UPDATE_WORK, exist_ok=True)
+        with open(UPDATE_LOG, "w", encoding="utf-8") as lf:
+            lf.write("%s install-fpk %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), path))
+            lf.flush()
+            p = subprocess.Popen(["appcenter-cli", "install-fpk", path],
+                                 stdout=lf, stderr=subprocess.STDOUT,
+                                 start_new_session=True)
+            rc = p.wait(timeout=900)
+            lf.write("\n[rc=%d]\n" % rc)
+        _write_state({"status": "done" if rc == 0 else "failed", "target": target,
+                      "path": path, "rc": rc, "ts": int(time.time())})
+    except Exception as e:
+        _write_state({"status": "failed", "target": target, "path": path,
+                      "message": "%s: %s" % (type(e).__name__, e), "ts": int(time.time())})
+
+
+def update_apply(obj):
+    src = str(obj.get("source") or "local")
+    if src != "local":
+        return {"ok": False, "error": "当前只支持安装本机目录里的安装包"}
+    path = os.path.realpath(str(obj.get("path") or ""))
+    allowed = [os.path.realpath(d) for d in UPDATE_DIRS]
+    if not any(path == a or path.startswith(a + os.sep) for a in allowed):
+        return {"ok": False, "error": "安装包必须放在受信任目录内"}
+    if not os.path.isfile(path):
+        return {"ok": False, "error": "安装包不存在"}
+    info = fpk_info(path)
+    if not info.get("valid"):
+        return {"ok": False, "error": "安装包校验失败：appname 不是 %s 或 manifest 缺失" % APPNAME}
+    if ver_key(info["version"]) <= ver_key(VERSION):
+        return {"ok": False, "error": "该包版本 %s 不高于当前 %s" % (info["version"], VERSION)}
+    _write_state({"status": "installing", "current": VERSION, "target": info["version"],
+                  "path": path, "started": int(time.time())})
+    threading.Thread(target=_install_worker,
+                     args=(path, info["version"]), daemon=True).start()
+    log("开始升级 %s -> %s" % (VERSION, info["version"]))
+    return {"ok": True, "started": True, "target": info["version"]}
+
+
+def update_log_tail(n=60):
+    try:
+        with open(UPDATE_LOG, encoding="utf-8", errors="replace") as f:
+            return "".join(f.readlines()[-n:])
+    except Exception:
+        return ""
 
 
 # ---------------- 代理 ----------------
@@ -195,6 +370,18 @@ class Handler(BaseHTTPRequestHandler):
                 "ui_dir": UI_DIR, "etc_dir": ETC_DIR,
             })
 
+        if p == "/api/update/check":
+            try:
+                return self._json(200, update_check())
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": "%s: %s" % (type(e).__name__, e)})
+
+        if p == "/api/update/state":
+            return self._json(200, {"ok": True, "current": VERSION, "state": _read_state()})
+
+        if p == "/api/update/log":
+            return self._json(200, {"ok": True, "log": update_log_tail()})
+
         if p.startswith("/proxy/bridge"):
             path = p[len("/proxy/bridge"):] or "/"
             if u.query:
@@ -224,6 +411,17 @@ class Handler(BaseHTTPRequestHandler):
             if not url:
                 url = BRIDGE_DEFAULT
             return self._json(200, probe(localize(url)))
+
+        if p == "/api/update/apply":
+            try:
+                obj = json.loads(raw.decode("utf-8") or "{}")
+            except Exception:
+                obj = {}
+            try:
+                res = update_apply(obj)
+            except Exception as e:
+                res = {"ok": False, "error": "%s: %s" % (type(e).__name__, e)}
+            return self._json(200 if res.get("ok") else 400, res)
 
         if p.startswith("/proxy/bridge"):
             path = p[len("/proxy/bridge"):] or "/"

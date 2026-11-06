@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>小爱音响控制台</title>
-<link rel="stylesheet" href="style.css?v=20261105-11">
+<link rel="stylesheet" href="style.css?v=20261106-21">
 <link rel="icon" href="images/icon_64.png">
 </head>
 <body>
@@ -61,6 +61,10 @@
         <span class="chip" title="小爱音箱"><i class="led" id="led-speaker"></i>音箱</span>
         <span class="chip" title="小爱桥接 8790"><i class="led" id="led-bridge"></i>桥接</span>
         <span class="chip" title="OpenClaw 网关"><i class="led" id="led-gw"></i>网关</span>
+        <button class="btn small upd" id="btn-update" type="button" title="检查更新">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg>
+          <span id="upd-label">检查更新</span>
+        </button>
         <button class="icon-btn" id="btn-refresh" title="刷新当前页" aria-label="刷新">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11A8 8 0 1 0 18 17"/><path d="M20 5v6h-6"/></svg>
         </button>
@@ -74,6 +78,23 @@
 
 <div class="toast" id="toast" hidden></div>
 
-<script src="app.js?v=20261105-11"></script>
+<div class="mask" id="upd-mask" hidden>
+  <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="upd-title">
+    <div class="dlg-head">
+      <b id="upd-title">软件更新</b>
+      <button class="icon-btn" id="upd-close" type="button" aria-label="关闭">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="dlg-body" id="upd-body"></div>
+    <div class="dlg-foot">
+      <span class="dlg-status" id="upd-status"></span>
+      <button class="btn quiet small" id="upd-cancel" type="button">关闭</button>
+      <button class="btn primary small" id="upd-apply" type="button" hidden>立即更新</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js?v=20261106-21"></script>
 </body>
 </html>

@@ -1623,6 +1623,165 @@
     paintChrome();
   }
 
+  // ================= 更新 =================
+  const UPD = { info: null, busy: false, target: '' };
+
+  const fmtSize = (b) => {
+    const n = Number(b || 0);
+    if (!n) return '—';
+    return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB';
+  };
+
+  const updTarget = (d) => {
+    if (!d) return '';
+    if (d.best_local && d.best_local.version) return d.best_local.version;
+    if (d.github && d.github.has_update) return d.github.latest || '';
+    return '';
+  };
+
+  function updPaintBtn(d) {
+    const btn = $('btn-update');
+    const lab = $('upd-label');
+    if (!btn || !lab) return;
+    const t = updTarget(d);
+    if (t) {
+      lab.textContent = '更新 v' + t;
+      btn.classList.add('hot');
+      btn.title = '发现新版本 v' + t;
+    } else {
+      lab.textContent = d && d.current ? '已是最新' : '检查更新';
+      btn.classList.remove('hot');
+      btn.title = d && d.current ? '当前 v' + d.current : '检查更新';
+    }
+  }
+
+  async function updCheck(silent) {
+    const btn = $('btn-update');
+    if (btn) btn.classList.add('spin');
+    try {
+      const d = await api('/api/update/check');
+      UPD.info = d;
+      updPaintBtn(d);
+      if (!silent) {
+        if (updTarget(d)) updOpen();
+        else toast('已是最新版本 v' + (d.current || '—'));
+      }
+    } catch (e) {
+      UPD.info = null;
+      updPaintBtn(null);
+      if (!silent) toast('检查更新失败', true);
+    } finally {
+      if (btn) btn.classList.remove('spin');
+    }
+  }
+
+  function updStatus(msg, bad) {
+    const el = $('upd-status');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.className = 'dlg-status' + (bad ? ' bad' : '');
+  }
+
+  function updOpen() {
+    const d = UPD.info || {};
+    const loc = d.best_local;
+    const gh = d.github || {};
+    const t = updTarget(d);
+    const rows = [`<div class="kv"><em>当前版本</em><b class="mono">v${esc(d.current || '—')}</b></div>`];
+
+    if (loc) {
+      rows.push(`<div class="kv"><em>可更新到</em><b class="mono">v${esc(loc.version)}</b></div>`);
+      rows.push(`<div class="kv"><em>安装包</em><b>${esc(loc.name)} · ${fmtSize(loc.size)}</b></div>`);
+      rows.push(`<div class="kv"><em>所在位置</em><b class="mono dim">${esc(loc.path)}</b></div>`);
+    } else if (t) {
+      rows.push(`<div class="kv"><em>可更新到</em><b class="mono">v${esc(t)}</b></div>`);
+      rows.push(`<div class="kv"><em>来源</em><b>远端发布 · ${fmtSize(gh.size)}</b></div>`);
+    } else {
+      rows.push('<div class="kv"><em>状态</em><b>已是最新版本</b></div>');
+    }
+
+    let note;
+    if (loc) {
+      note = '更新会重启应用，约需 20–60 秒。小米登录态、曲库索引与配置都在数据目录里，不会被清掉。';
+    } else if (t) {
+      note = `远端有 v${esc(t)}，但本机没有对应安装包。把它放进 <span class="mono">${esc((d.dirs || [])[0] || '')}</span> 后再点一次即可。`;
+    } else {
+      note = `正在监视的目录：<span class="mono">${esc((d.dirs || []).join('  ·  '))}</span>。把新的 fpk 放进去，点按钮就能装。`;
+    }
+
+    $('upd-body').innerHTML = `<div class="dlg-rows">${rows.join('')}</div><p class="dlg-note">${note}</p>`;
+    $('upd-apply').hidden = !loc;
+    $('upd-apply').disabled = false;
+    $('upd-cancel').disabled = false;
+    $('upd-cancel').textContent = '关闭';
+    updStatus('');
+    $('upd-mask').hidden = false;
+  }
+
+  function updClose() {
+    $('upd-mask').hidden = true;
+  }
+
+  async function updApply() {
+    const loc = UPD.info && UPD.info.best_local;
+    if (!loc) { toast('没有可安装的本机安装包', true); return; }
+    const btn = $('upd-apply');
+    btn.disabled = true;
+    const r = await api('/api/update/apply', { source: 'local', path: loc.path });
+    if (!r.ok) {
+      btn.disabled = false;
+      updStatus(r.error || '启动更新失败', true);
+      return;
+    }
+    UPD.busy = true;
+    UPD.target = r.target;
+    btn.hidden = true;
+    $('upd-cancel').disabled = true;
+    updStatus('正在安装 v' + r.target + '…');
+    updPoll(r.target);
+  }
+
+  function updPoll(target) {
+    const t0 = Date.now();
+    let down = false;
+    let stillOld = 0;
+    const timer = setInterval(async () => {
+      if (Date.now() - t0 > 240000) {
+        clearInterval(timer);
+        updStatus('等待超时，请到应用中心查看安装结果', true);
+        $('upd-cancel').disabled = false;
+        return;
+      }
+      let ver = '';
+      let alive = false;
+      try {
+        const r = await fetch(BASE + 'health?t=' + Date.now(), { cache: 'no-store' });
+        if (r.ok) { const j = await r.json(); ver = j.version || ''; alive = true; }
+      } catch (e) { alive = false; }
+
+      if (!alive) { down = true; updStatus('应用正在重启，等待恢复…'); return; }
+      if (ver === target) {
+        clearInterval(timer);
+        updStatus('已更新到 v' + ver + '，正在刷新页面');
+        $('upd-cancel').disabled = false;
+        setTimeout(() => location.reload(), 1000);
+        return;
+      }
+      if (down) {
+        stillOld += 1;
+        if (stillOld >= 3) {
+          clearInterval(timer);
+          updStatus('已恢复运行，但版本仍是 v' + ver + '，安装未生效', true);
+          $('upd-cancel').disabled = false;
+        } else {
+          updStatus('已恢复运行，等待版本切换…');
+        }
+        return;
+      }
+      updStatus('正在安装 v' + target + '…');
+    }, 2000);
+  }
+
   // ================= 路由 =================
   const TITLES = {
     overview: ['概览', '这台机器现在在做什么'],
@@ -1676,12 +1835,22 @@
       };
     });
     $('btn-refresh').onclick = refreshCurrent;
+    $('btn-update').onclick = () => {
+      if (updTarget(UPD.info)) updOpen();
+      else updCheck(false);
+    };
+    $('upd-close').onclick = updClose;
+    $('upd-cancel').onclick = () => { if (!UPD.busy) updClose(); };
+    $('upd-apply').onclick = updApply;
+    $('upd-mask').onclick = (e) => { if (e.target === $('upd-mask') && !UPD.busy) updClose(); };
     window.addEventListener('hashchange', route);
 
     await loadMeta();
     await Promise.all([probeBridge(), loadOc(), loadState(), loadMi(), loadBackendModel()]);
     paintChrome();
     route();
+
+    setTimeout(() => updCheck(true), 1500);
 
     setInterval(() => {
       if (!location.hash || location.hash === '#/') {
