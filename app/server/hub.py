@@ -22,7 +22,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, urlsplit, unquote
 
-VERSION = "1.5.1"
+VERSION = "1.5.3"
 
 PORT = int(os.environ.get("HUB_PORT") or 8900)
 # 桌面 iframe 走平台网关时挂在 /app/xiaoai-console/ 前缀下；直连端口则挂在 /
@@ -65,7 +65,8 @@ UPDATE_DIRS = [d for d in (
     os.environ.get("HUB_UPDATE_DIR") or "/path/to/fpk-dir",
     os.path.join(ETC_DIR, "update"),
 ) if d]
-UPDATE_WORK = os.path.join(ETC_DIR, "update")
+# 状态与日志放 /tmp：升级要卸载应用，@appconf 下的文件在卸载/重装过程中不可靠
+UPDATE_WORK = os.environ.get("HUB_UPDATE_WORK") or "/tmp/xc-update"
 UPDATE_STATE = os.path.join(UPDATE_WORK, "state.json")
 UPDATE_LOG = os.path.join(UPDATE_WORK, "install.log")
 
@@ -179,24 +180,78 @@ def _read_state():
         return {"status": "idle"}
 
 
+def _volume_index():
+    """应用装在哪个卷：从 /vol1/@appconf/... 反推 1"""
+    for s in ETC_DIR.split(os.sep):
+        if len(s) > 3 and s.startswith("vol") and s[3:].isdigit():
+            return int(s[3:])
+    return 1
+
+
+def _upgrade_script(path, target):
+    """生成升级脚本。
+
+    appcenter-cli 的 install-fpk 遇到同 appname 已安装时只打印
+    「Application [x] is installed.」就返回 0，根本不覆盖文件，
+    所以升级必须自己拆成 卸载 -> 安装 -> 启动 三步。
+    stop 会杀掉 hub 本身，这整段因此要交给独立进程执行。
+    """
+    return """#!/bin/sh
+set -u
+LOG="{log}"
+STATE="{state}"
+exec >>"$LOG" 2>&1
+echo "$(date '+%F %T') === 升级 {target} ==="
+appcenter-cli stop {app}
+echo "stop rc=$?"
+sleep 2
+appcenter-cli uninstall {app}
+echo "uninstall rc=$?"
+sleep 2
+appcenter-cli install-fpk "{path}" -v {vol}
+echo "install rc=$?"
+sleep 2
+appcenter-cli start {app}
+echo "start rc=$?"
+echo "$(date '+%F %T') === 结束 ==="
+""".format(log=UPDATE_LOG, state=UPDATE_STATE, target=target,
+           app=APPNAME, path=path, vol=_volume_index())
+
+
 def _install_worker(path, target):
-    # 先把 HTTP 响应送出去，再动应用；start_new_session 让安装进程在 hub 被杀后继续
+    # 先把 HTTP 响应送出去，再动应用
     time.sleep(1.5)
     try:
         os.makedirs(UPDATE_WORK, exist_ok=True)
-        with open(UPDATE_LOG, "w", encoding="utf-8") as lf:
-            lf.write("%s install-fpk %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), path))
-            lf.flush()
-            p = subprocess.Popen(["appcenter-cli", "install-fpk", path],
-                                 stdout=lf, stderr=subprocess.STDOUT,
-                                 start_new_session=True)
-            rc = p.wait(timeout=900)
-            lf.write("\n[rc=%d]\n" % rc)
-        _write_state({"status": "done" if rc == 0 else "failed", "target": target,
-                      "path": path, "rc": rc, "ts": int(time.time())})
+        script = os.path.join(UPDATE_WORK, "upgrade.sh")
+        with open(script, "w", encoding="utf-8", newline="\n") as f:
+            f.write(_upgrade_script(path, target))
+        os.chmod(script, 0o755)
+        with open(UPDATE_LOG, "a", encoding="utf-8") as lf:
+            lf.write("\n")
+        # start_new_session：hub 被 stop 掉后脚本继续跑完
+        subprocess.Popen(["/bin/sh", script],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, close_fds=True)
+        log("已启动升级脚本 %s" % script)
     except Exception as e:
         _write_state({"status": "failed", "target": target, "path": path,
                       "message": "%s: %s" % (type(e).__name__, e), "ts": int(time.time())})
+
+
+def _reconcile_state():
+    """进程重启后收敛上一条 installing 记录：版本对上才算成功"""
+    st = _read_state()
+    if st.get("status") != "installing":
+        return
+    tgt = str(st.get("target") or "")
+    okv = bool(tgt) and ver_key(VERSION) >= ver_key(tgt)
+    st.update({"status": "done" if okv else "failed", "now": VERSION,
+               "finished": int(time.time())})
+    if not okv:
+        st["message"] = "升级后版本仍为 %s（目标 %s）" % (VERSION, tgt)
+    _write_state(st)
+    log("升级状态收敛：%s（当前 %s）" % (st["status"], VERSION))
 
 
 def update_apply(obj):
@@ -468,6 +523,11 @@ def main():
     log("UI_DIR=%s" % UI_DIR)
     log("ETC_DIR=%s" % ETC_DIR)
     log("BRIDGE=%s" % BRIDGE_DEFAULT)
+
+    try:
+        _reconcile_state()
+    except Exception as e:
+        log("收敛升级状态失败: %s" % e)
 
     httpd = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     httpd.daemon_threads = True
