@@ -1867,8 +1867,11 @@
     let note;
     if (loc) {
       note = '更新会重启应用，约需 20–60 秒。小米登录态、曲库索引与配置都在数据目录里，不会被清掉。';
+    } else if (t && d.can_download) {
+      note = `本机没有 v${esc(t)} 的安装包。点「下载并更新」，由这台 NAS 自己从发布页取回`
+        + (gh.size ? `（${fmtSize(gh.size)}）` : '') + '，装完自动重启，全程约 1–2 分钟。';
     } else if (t) {
-      note = `远端有 v${esc(t)}，但本机没有对应安装包。把它放进 <span class="mono">${esc((d.dirs || [])[0] || '')}</span> 后再点一次即可。`;
+      note = `远端有 v${esc(t)}，但这个发布没有可下载的 fpk 附件。把它放进 <span class="mono">${esc((d.dirs || [])[0] || '')}</span> 后再点一次即可。`;
     } else {
       note = `正在监视的目录：<span class="mono">${esc((d.dirs || []).join('  ·  '))}</span>。把新的 fpk 放进去，点按钮就能装。`;
     }
@@ -1879,8 +1882,10 @@
     }
 
     $('upd-body').innerHTML = `<div class="dlg-rows">${rows.join('')}</div><p class="dlg-note">${note}</p>`;
-    $('upd-apply').hidden = !loc;
-    $('upd-apply').disabled = false;
+    const btnApply = $('upd-apply');
+    btnApply.hidden = !t;
+    btnApply.textContent = loc ? '立即更新' : '下载并更新';
+    btnApply.disabled = false;
     $('upd-cancel').disabled = false;
     $('upd-cancel').textContent = '关闭';
     updStatus('');
@@ -1892,11 +1897,14 @@
   }
 
   async function updApply() {
-    const loc = UPD.info && UPD.info.best_local;
-    if (!loc) { toast('没有可安装的本机安装包', true); return; }
+    const d = UPD.info || {};
+    const loc = d.best_local;
+    const canDl = !!d.can_download;
     const btn = $('upd-apply');
+    if (!loc && !canDl) { toast('没有可安装的安装包', true); return; }
     btn.disabled = true;
-    const r = await api('/api/update/apply', { source: 'local', path: loc.path });
+    const r = await api('/api/update/apply',
+      loc ? { source: 'local', path: loc.path } : { source: 'github' });
     if (!r.ok) {
       btn.disabled = false;
       updStatus(r.error || '启动更新失败', true);
@@ -1906,21 +1914,46 @@
     UPD.target = r.target;
     btn.hidden = true;
     $('upd-cancel').disabled = true;
-    updStatus('正在安装 v' + r.target + '…');
-    updPoll(r.target);
+    updStatus(r.download ? '正在下载 v' + r.target + '…' : '正在安装 v' + r.target + '…');
+    updPoll(r.target, !!r.download);
   }
 
-  function updPoll(target) {
+  function updPoll(target, downloading) {
     const t0 = Date.now();
     let down = false;
     let stillOld = 0;
+    let dl = !!downloading;
     const timer = setInterval(async () => {
-      if (Date.now() - t0 > 240000) {
+      if (Date.now() - t0 > 600000) {
         clearInterval(timer);
         updStatus('等待超时，请到应用中心查看安装结果', true);
         $('upd-cancel').disabled = false;
         return;
       }
+
+      // 下载阶段的进度只能从服务端状态拿；下载完会自动转成 installing
+      if (dl) {
+        let s = null;
+        try { s = await api('/api/update/state'); } catch (e) { s = null; }
+        const st = (s && s.state) || s || {};
+        if (st.status === 'downloading') {
+          const pct = st.percent || 0;
+          const tail = st.total ? `（${fmtSize(st.got || 0)} / ${fmtSize(st.total)}）` : '';
+          updStatus(`正在下载 v${target}… ${pct}%${tail}`);
+          return;
+        }
+        if (st.status === 'failed') {
+          clearInterval(timer);
+          updStatus('更新失败：' + (st.message || '未知原因'), true);
+          $('upd-cancel').disabled = false;
+          return;
+        }
+        if (st.status === 'installing') {
+          dl = false;
+          updStatus('正在安装 v' + target + '…');
+        }
+      }
+
       let ver = '';
       let alive = false;
       try {

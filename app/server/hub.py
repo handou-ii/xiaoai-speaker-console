@@ -25,7 +25,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse, urlsplit, unquote
 
-VERSION = "1.5.5"
+VERSION = "1.5.6"
 
 PORT = int(os.environ.get("HUB_PORT") or 8900)
 # 桌面 iframe 走平台网关时挂在 /app/xiaoai-console/ 前缀下；直连端口则挂在 /
@@ -161,8 +161,107 @@ def gh_latest(timeout=8):
     a0 = assets[0] if assets else {}
     return {"ok": True, "latest": tag, "name": d.get("name") or "",
             "url": a0.get("browser_download_url") or "", "size": a0.get("size") or 0,
+            # API 资源地址：browser_download_url 走 github.com 直链，
+            # 有些网络能开 API 却打不开 github.com；这条带 octet-stream 也能下，
+            # 万一前者不通就用它兜底。
+            "api_url": a0.get("url") or "",
+            "asset": a0.get("name") or "",
             "notes": (d.get("body") or "")[:400],
             "has_update": bool(tag) and ver_key(tag) > ver_key(VERSION)}
+
+
+def download_dir():
+    """远端包下载到应用自己的 update 目录：它在受信任目录内，卸载重装也不会被清"""
+    d = os.path.join(ETC_DIR, "update")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _safe_name(name):
+    """远端文件名只取 basename，且必须是 .fpk，避免拼出奇怪的路径"""
+    n = os.path.basename(str(name or "").replace("\\", "/")).strip()
+    if not n or not n.lower().endswith(".fpk"):
+        return ""
+    return n
+
+
+def _fetch(url, dest, total=0, timeout=60):
+    """流式下载并回报进度；先写 .part，成功后再改名，失败不会留下半截文件"""
+    tmp = dest + ".part"
+    got = 0
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "xiaoai-console/" + VERSION,
+        "Accept": "application/octet-stream"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r, open(tmp, "wb") as f:
+            size = total or int(r.headers.get("Content-Length") or 0)
+            while True:
+                chunk = r.read(262144)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                if size:
+                    pct = min(99, int(got * 100 / size))
+                    _write_state({"status": "downloading", "current": VERSION,
+                                  "target": _DL.get("target", ""),
+                                  "got": got, "total": size, "percent": pct,
+                                  "started": _DL.get("started", int(time.time()))})
+        os.replace(tmp, dest)
+        return got
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# 下载线程要读的几个值：放模块级，避免闭包串到别处
+_DL = {}
+_DL_LOCK = threading.Lock()
+
+
+def _download_worker(gh):
+    """后台取包 → 校验 → 交给安装线程"""
+    target = str(gh.get("latest") or "")
+    try:
+        name = _safe_name(gh.get("asset")) or ("xiaoai-speaker-console-%s.fpk" % target)
+        dest = os.path.join(download_dir(), name)
+        urls = [u for u in (gh.get("url"), gh.get("api_url")) if u]
+        if not urls:
+            raise RuntimeError("远端没有可下载的 fpk 附件")
+        last = None
+        for i, u in enumerate(urls):
+            try:
+                log("开始下载 %s（第 %d 个地址）" % (name, i + 1))
+                _fetch(u, dest, gh.get("size") or 0)
+                last = None
+                break
+            except Exception as e:
+                last = e
+                log("下载失败 %s: %s: %s" % (u[:60], type(e).__name__, e))
+        if last is not None:
+            raise last
+        info = fpk_info(dest)
+        if not info.get("valid"):
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            raise RuntimeError("下载到的包校验失败（appname/version 不对）")
+        if ver_key(info["version"]) != ver_key(target):
+            raise RuntimeError("包版本 %s 与发布版本 %s 不一致" % (info["version"], target))
+        log("下载完成 %s（%d 字节，版本 %s）" % (name, info["size"], info["version"]))
+        _write_state({"status": "installing", "current": VERSION,
+                      "target": info["version"], "path": dest,
+                      "started": int(time.time())})
+        _install_worker(dest, info["version"])
+    except Exception as e:
+        msg = "%s: %s" % (type(e).__name__, e)
+        _write_state({"status": "failed", "target": target, "message": msg,
+                      "ts": int(time.time())})
+        log("下载更新失败：%s" % msg)
 
 
 def update_check():
@@ -173,6 +272,9 @@ def update_check():
             "dirs": update_dirs(), "unsafe_dirs": dir_warnings(),
             "local": local[:10], "newer": newer[:5],
             "best_local": newer[0] if newer else None, "github": gh,
+            # 远端有新版且有 fpk 附件 → 界面可以直接「下载并更新」，不必先手动放包
+            "can_download": bool(gh.get("ok") and gh.get("has_update")
+                                 and (gh.get("url") or gh.get("api_url"))),
             "has_update": bool(newer) or bool(gh.get("has_update")),
             "state": _read_state()}
 
@@ -278,8 +380,14 @@ def _install_worker(path, target):
 
 
 def _reconcile_state():
-    """进程重启后收敛上一条 installing 记录：版本对上才算成功"""
+    """进程重启后收敛上一条记录：版本对上才算成功"""
     st = _read_state()
+    if st.get("status") == "downloading":
+        st.update({"status": "failed", "message": "下载中断（应用重启过）",
+                   "finished": int(time.time())})
+        _write_state(st)
+        log("下载状态收敛：中断")
+        return
     if st.get("status") != "installing":
         return
     tgt = str(st.get("target") or "")
@@ -294,8 +402,39 @@ def _reconcile_state():
 
 def update_apply(obj):
     src = str(obj.get("source") or "local")
+    if src == "github":
+        # 远端发布直接更新：由 NAS 自己把 fpk 取回来再装，不用人先下载再放目录
+        with _DL_LOCK:
+            if _DL.get("running"):
+                return {"ok": False, "error": "已经有一个下载在进行了"}
+            gh = gh_latest()
+            if not gh.get("ok"):
+                return {"ok": False, "error": "查不到远端版本：%s" % (gh.get("error") or "未知")}
+            if not gh.get("has_update"):
+                return {"ok": False, "error": "远端没有比 v%s 更新的版本" % VERSION}
+            if not (gh.get("url") or gh.get("api_url")):
+                return {"ok": False, "error": "远端发布没有 fpk 附件"}
+            _DL.clear()
+            _DL.update({"running": True, "target": gh.get("latest") or "",
+                        "started": int(time.time())})
+        _write_state({"status": "downloading", "current": VERSION,
+                      "target": gh.get("latest") or "", "got": 0,
+                      "total": gh.get("size") or 0, "percent": 0,
+                      "started": int(time.time())})
+
+        def run():
+            try:
+                _download_worker(gh)
+            finally:
+                with _DL_LOCK:
+                    _DL["running"] = False
+
+        threading.Thread(target=run, daemon=True).start()
+        log("开始从远端下载 %s" % (gh.get("latest") or ""))
+        return {"ok": True, "started": True, "target": gh.get("latest") or "",
+                "download": True}
     if src != "local":
-        return {"ok": False, "error": "当前只支持安装本机目录里的安装包"}
+        return {"ok": False, "error": "来源只能是 local 或 github"}
     path = os.path.realpath(str(obj.get("path") or ""))
     allowed = [os.path.realpath(d) for d in update_dirs()]
     if not any(path == a or path.startswith(a + os.sep) for a in allowed):
