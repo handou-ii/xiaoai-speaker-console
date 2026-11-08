@@ -27,7 +27,7 @@ class ConversationListener:
         self.cfg = cfg
         self.device_id = cfg.device.get("device_id", "")
         self.hardware = cfg.device.get("hardware", "")
-        self.poll_sec = float(cfg.listen.get("poll_sec", 0.5))
+        self.poll_sec = float(cfg.listen.get("poll_sec", 0.3))
         self.last_ts = int(time.time() * 1000)
         self._running = False
         self.auth_failed = False       # 给 WebUI 显示"需要重新扫码"
@@ -94,7 +94,10 @@ class ConversationListener:
                 rec = await self._fetch_once()
                 if rec and rec["time"] > self.last_ts:
                     self.last_ts = rec["time"]
-                    log.info("新指令 [%s] %s", rec["time"], rec["query"])
+                    # 这个 lag 是「小米写好记录」到「我们拿到」的差，只含轮询间隔与
+                    # 接口往返。小爱先开口的那一段在记录写入之前，压不掉，也不在这里。
+                    lag = max(0, int(time.time() * 1000) - int(rec["time"]))
+                    log.info("新指令 [%s] %s（距记录 %dms）", rec["time"], rec["query"], lag)
                     # 不 await：让回调并发跑，避免阻塞下一次轮询
                     asyncio.create_task(self._safe_handle(on_command, rec))
                 if self._fail:

@@ -11,7 +11,7 @@
   },
   "listen": {
     "enabled": true,
-    "poll_sec": 0.5
+    "poll_sec": 0.3
   },
   "wake": {
     "names": [

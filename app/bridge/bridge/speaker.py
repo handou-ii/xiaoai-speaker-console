@@ -115,6 +115,7 @@ class Speaker:
         self._state_cache = None
         self._state_at = 0.0
         self.last_spoke_at = 0.0      # 最近一次真正播报的时间（防止重复念）
+        self._audio_gen = 0           # 每次推新音频 +1，用来让连发 stop 及时收手
         self.silence_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                         "silence6.mp3")
         self._silence = None
@@ -129,6 +130,31 @@ class Speaker:
         except Exception as e:
             log.warning("player_stop 失败: %s", e)
             return None
+
+    async def stop_burst(self, delays=(0.0, 0.25, 0.6)):
+        """连发几次 stop，专治「小爱开口了但控制台还没打断」。
+
+        小米的对话记录是在回答生成完之后才写入的：我们拿到 query 时，小爱
+        往往已经念出前几个字。这时单发一次 stop 有两种落空方式——
+        ① 设备还没真正开播，指令落在空处，之后它照念；
+        ② 指令丢了或延迟到，等它到达已经过去一两句。
+        所以按 0 / 0.25 / 0.6 秒连发三次，覆盖这段窗口。
+
+        每次发之前看 _audio_gen 有没有变：play_url 一推新音频就 +1，
+        说明已经进入「播自己的东西」阶段，立刻收手，绝不把刚起的音乐停掉。
+        """
+        gen = self._audio_gen
+
+        async def once(d):
+            if d:
+                await asyncio.sleep(d)
+            if self._audio_gen != gen:
+                log.info("停止序列中止：已经推送新音频")
+                return
+            await self.stop()
+
+        # 并发发，不串行：单次 stop 往返要 0.3~0.8 秒，串行会把第三次推到 1.5 秒后
+        await asyncio.gather(*(once(d) for d in delays))
 
     async def is_playing(self):
         """是否正在播放。注意 status 藏在 data.info 这个 JSON 字符串里，不是 data 直接给"""
@@ -407,6 +433,7 @@ class Speaker:
 
     # ---------- 播音频 ----------
     async def play_url(self, url, interrupt=True):
+        self._audio_gen += 1          # 通知 stop_burst：已经进入播自己的东西，别再发 stop
         if interrupt:
             await self.stop()
             await asyncio.sleep(0.2)

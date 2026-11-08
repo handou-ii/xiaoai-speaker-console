@@ -152,6 +152,11 @@ class Bridge:
             return
         self._busy = True
         try:
+            # 掐断小爱自己的回答。它的对话记录是在回答生成完之后才写的，
+            # 我们拿到 query 时它往往已经开口，所以这一条必须排在所有 await
+            # 之前（原先是算完 plan 才发，白等几十到几百毫秒），并且连发三次
+            # 覆盖「单次 stop 落在它开播之前」的落空情况。
+            stop_task = asyncio.create_task(self.speaker.stop_burst())
             plan = bare_plan or await self.router.plan(
                 intent, wake_hit=hit,
                 wake_scope=getattr(self.matcher, "last_scope", None),
@@ -167,8 +172,6 @@ class Bridge:
                                         route=plan.source, note=plan.note,
                                         plan=plan.reply)
 
-            # 掐断小爱自己的回答（它是先出声、后写对话记录的）
-            stop_task = asyncio.create_task(self.speaker.stop())
             confirm = self.cfg.speak.get("confirm_audio")
             if confirm:
                 asyncio.create_task(
