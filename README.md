@@ -2,16 +2,18 @@
 
 飞牛 fnOS 上的小爱音箱控制台：装完即用，自带一个桥接容器，把小米音箱接上本地曲库和 OpenClaw。
 
-- **本地曲库播放**：填 NAS 路径即索引入库，按歌手/专辑/歌单随机或顺序播放，音量可调。
-- **唤醒词**：本地唤醒词只跑固定指令（如「播放本地」）完全由控制台执行，OpenClaw 触发词整句转给 agent，两套互不干扰。
-- **固定指令**：自定义说法 → 动作，控制识别操作执行，
-- **局域网快捷指令**支持 iOS 快捷指令与安卓 HTTP Shortcuts 直接 POST 触发。
+- **本地曲库播放**：填 NAS 路径即索引入库，按歌手/专辑/歌单随机或顺序播放，进度条可拖动，音量可调。
+- **唤醒词**：本地唤醒词只跑固定指令（如「播放本地」），OpenClaw 触发词整句转给 agent，两套互不干扰。
+- **固定指令**：自定义说法 → 动作，支持 iOS 快捷指令与安卓 HTTP Shortcuts 直接 POST 触发。
 - **OpenClaw 语音通道**：把音箱当语音入口，网关地址支持自动探测（读 `openclaw.json` 的 `gateway.port`，再探 48670/48671/18789）。
+- **登录持久化**：小米登录态存在应用数据目录，serviceToken 12 小时续期一次 + 每 30 分钟探活，续期时收下整包 Set-Cookie（passToken 会被轮换），不必反复扫码。
+
 ## 目录结构
 
 ```
 manifest          # 应用元信息（appname / 版本 / 端口 / 变更记录）
 cmd/main          # 启停脚本：hub 进程 + 桥接容器一起启停
+docker-compose.yml # 非飞牛环境用：只起桥接（8790）
 config/           # 权限与资源声明
 wizard/           # 安装向导
 ui/               # 控制台前端（8900），桌面入口从这里加载
@@ -48,6 +50,27 @@ appcenter-cli start xiaoai-console
 ```
 
 控制台默认 8900，桥接默认 8790。
+
+## 非飞牛环境（Docker Compose）
+
+群晖、威联通、绿联、极空间、普通 Linux 等也可以用，但**只有桥接（8790）**：曲库索引、播放控制、固定指令、唤醒词、OpenClaw 转发都在里面。8900 控制台是飞牛套件的一部分（宿主 python 进程 + 应用框架），不包含在这份 compose 里，访问保护也只是 8900 的功能。
+
+```bash
+mkdir -p data
+cp app/bridge/config.example.json data/config.json
+# 改 docker-compose.yml 里的 XIAOAI_PUBLIC_BASE、XIAOAI_HOST_IP 和曲库目录
+docker compose up -d --build
+```
+
+打开 `http://<这台机器的局域网地址>:8790`。
+
+三个容易踩的点：
+
+- `XIAOAI_PUBLIC_BASE` 必须写宿主机的局域网地址，不能写 `127.0.0.1`——音箱是按这个地址回来拉音频的，容器里的回环地址它访问不到。
+- 曲库目录要**容器内外同路径**挂载（例如 `/mnt/music:/mnt/music:ro`），因为这个路径会原样填进「音乐路径」。
+- `data/config.json` 必须在 `up` 之前存在，否则 Docker 会把它建成一个目录，容器起不来。
+
+桥接本身不做访问校验，只适合放在局域网，不要映射到公网。
 
 ## 更新
 
