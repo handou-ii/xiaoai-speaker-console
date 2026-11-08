@@ -18,6 +18,7 @@ from aiohttp import web
 from .agent import canonical as oc_canonical, host_ip as oc_host_ip
 from .rules import (WakeMatcher, names_from_patterns, normalize,
                     strip_device_wake)
+from . import security
 
 log = logging.getLogger("webui")
 
@@ -62,6 +63,8 @@ def _mask(obj, depth=0):
 
 
 def attach(app, bridge, web_dir):
+    # 口令校验放在最前面：控制台（8900）与桥接（8790）共用同一枚 cookie
+    app.middlewares.append(security.guard)
     cfg = bridge.cfg
     library = bridge.library
     player = bridge.player
@@ -203,6 +206,49 @@ def attach(app, bridge, web_dir):
         st = await speaker.get_state(ttl=0)
         return {"ok": True, "volume": st.get("volume")}
 
+    # ---------- 播报音量 ----------
+    def _speak_view():
+        try:
+            sv = int(cfg.speak.get("speech_volume") or 0)
+        except (TypeError, ValueError):
+            sv = 0
+        return {
+            "ok": True,
+            "speech_volume": sv,
+            "edge_volume": str(cfg.speak.get("edge_volume") or "+100%"),
+            "tts_mode": str(cfg.speak.get("tts_mode") or "edge"),
+        }
+
+    async def api_speak_get(_request):
+        return web.json_response(_speak_view())
+
+    @_need_json
+    async def api_speak_save(body):
+        """播报音量：speech_volume 是播报时临时抬到多少（0=不动音箱音量）"""
+        if "speech_volume" in body:
+            try:
+                v = int(body["speech_volume"])
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "播报音量要填 0–100 的数字"}
+            if not 0 <= v <= 100:
+                return {"ok": False, "error": "播报音量要在 0–100 之间"}
+            cfg.set("speak", "speech_volume", value=v)
+        if "edge_volume" in body:
+            ev = str(body["edge_volume"]).strip()
+            if not re.fullmatch(r"[+-]\d{1,3}%", ev):
+                return {"ok": False, "error": "增益写成 +0% / +50% 这种格式"}
+            cfg.set("speak", "edge_volume", value=ev)
+        if "tts_mode" in body:
+            m = str(body["tts_mode"]).strip().lower()
+            if m not in ("edge", "xiaomi"):
+                return {"ok": False, "error": "TTS 通道只能是 edge（云端合成）或 xiaomi（设备本地）"}
+            # 走接口改会同时更新内存里的配置，不必重启容器
+            cfg.set("speak", "tts_mode", value=m)
+        cfg.save()
+        v = _speak_view()
+        history.action("播报音量 → %s（合成增益 %s）" % (v["speech_volume"], v["edge_volume"]))
+        return v
+
     # ---------- 曲库 / 音乐路径 ----------
     @_need_json
     async def api_search(body):
@@ -233,7 +279,7 @@ def attach(app, bridge, web_dir):
 
     @_need_json
     async def api_roots_add(body):
-        r = library.add_root(body.get("path", ""))
+        r = library.add_root(body.get("path", ""), force=bool(body.get("force")))
         if r.get("ok"):
             n = await bridge.scan_library(force=True)
             r["count"] = n
@@ -945,6 +991,7 @@ def attach(app, bridge, web_dir):
                 "volume": st.get("volume"),
             },
             "player": p,
+            "speak": _speak_view(),
             "library": {
                 "count": len(library.tracks),
                 "roots": library.roots,
@@ -1093,6 +1140,7 @@ def attach(app, bridge, web_dir):
         log.info("后端模型切换为 %s", want)
         return {"ok": True, "model": want, "note": "网关会自动热加载，几秒内生效"}
 
+    app.router.add_post("/api/auth/login", security.api_login)
     app.router.add_get("/media/{name}", media)
     app.router.add_get("/audio/{name}", audio)
     app.router.add_get("/m/{name}", short_audio)
@@ -1109,6 +1157,8 @@ def attach(app, bridge, web_dir):
     app.router.add_post("/api/jump", api_jump)
     app.router.add_post("/api/mode", api_mode)
     app.router.add_post("/api/volume", api_volume)
+    app.router.add_get("/api/speak", api_speak_get)
+    app.router.add_post("/api/speak", api_speak_save)
     app.router.add_post("/api/search", api_search)
     app.router.add_post("/api/library/rescan", api_rescan)
     app.router.add_get("/api/library/roots", api_roots)

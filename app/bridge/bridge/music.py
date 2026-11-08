@@ -181,27 +181,35 @@ class MusicLibrary:
             })
         return out
 
-    def add_root(self, path):
-        """新增音乐目录：先验证可见性，再写回 config.json"""
+    def add_root(self, path, force=False):
+        """新增音乐目录：先验证可见性，再写回 config.json
+
+        force=True 只由控制台（在宿主机上）发起：容器是按曲库目录逐条挂载的，
+        新目录在容器里暂时看不见属正常情况，先记进配置，重启应用后才会挂进来。
+        """
         path = (path or "").strip().rstrip("/")
         if not path:
             return {"ok": False, "error": "路径为空"}
         if not os.path.isabs(path):
-            return {"ok": False, "error": "请填绝对路径，例如 /vol1/1000/音乐文件"}
+            return {"ok": False, "error": "请填绝对路径，例如 /vol1/1000/音乐"}
         if path in self.roots:
             return {"ok": False, "error": "这个路径已经加过了"}
+        needs_restart = False
         if not os.path.isdir(path):
-            return {"ok": False,
-                    "error": "找不到这个目录，请填 NAS 上真实存在的绝对路径",
-                    "need_mount": True}
-        if not os.access(path, os.R_OK):
+            if not force:
+                return {"ok": False,
+                        "error": "容器里看不到这个目录：要么路径写错了，"
+                                 "要么是还没挂进容器的新目录（需重启应用）",
+                        "need_mount": True}
+            needs_restart = True
+        elif not os.access(path, os.R_OK):
             return {"ok": False,
                     "error": "目录存在但没有读权限（NAS 上用 ACL 授权给运行用户）"}
         self.roots.append(path)
         self.cfg.set("music", "roots", value=list(self.roots))
         self.cfg.save()
-        log.info("新增音乐目录 %s", path)
-        return {"ok": True, "roots": self.roots}
+        log.info("新增音乐目录 %s（需重启=%s）", path, needs_restart)
+        return {"ok": True, "roots": self.roots, "needs_restart": needs_restart}
 
     def remove_root(self, path):
         path = (path or "").strip().rstrip("/")

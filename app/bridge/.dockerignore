@@ -1,0 +1,25 @@
+# 构建上下文白名单之外的东西一律别进镜像：
+# 本地跑过脚本就会留下 pyc / 缓存，Dockerfile 里的 COPY bridge/ 会把这些一起打包
+__pycache__/
+**/__pycache__/
+*.py[cod]
+**/*.py[cod]
+*.bak
+**/*.bak
+*.log
+*.part
+
+# 运行期数据与凭据（正常情况下不会出现在源码目录，防止误拷）
+conf/
+media/
+logs/
+.mi.token
+auth.json
+config.json
+
+# 预打包镜像本体（由打包脚本单独生成，不进构建上下文）
+img.tar.gz
+
+# 系统杂项
+.DS_Store
+Thumbs.db

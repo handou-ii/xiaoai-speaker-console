@@ -38,7 +38,7 @@ def main():
     old = copy.deepcopy(old)
     old["command"] = NEW_CMD
     old.pop("args", None)
-    old["args"] = ["/vol1/docker/xiaoai-bridge/mcp_server.py"]
+    old["args"] = ["/path/to/xiaoai-bridge/mcp_server.py"]
     old.setdefault("env", {})["XIAOAI_BRIDGE_URL"] = "http://127.0.0.1:8790"
 
     # 1) 先删，让网关做一次 reload（此时会关掉旧的 MCP 进程）

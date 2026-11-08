@@ -287,6 +287,20 @@
           </div>
           <button class="go" type="button" data-go="openclaw">进入 ${icon(I.arrow, 12)}</button>
         </div>
+
+        <div class="rack-row">
+          <span class="slot">04</span>
+          <div class="id">
+            <b><i class="led" id="r-auth-led"></i><span>访问保护</span></b>
+            <i>控制台与桥接的访问口令</i>
+          </div>
+          <div class="stats">
+            <div class="stat"><em>状态</em><b id="r-auth-state">—</b></div>
+            <div class="stat"><em>作用于</em><b class="mono">8900 · 8790</b></div>
+            <div class="stat"><em>音箱放歌</em><b>不受影响</b></div>
+          </div>
+          <button class="go" type="button" id="r-auth-btn">设置</button>
+        </div>
       </div>
 
       <div class="panel">
@@ -406,7 +420,7 @@
   }
 
   async function refreshOverview() {
-    await Promise.all([probeBridge(), loadOc(), loadState(), loadMi(), loadBackendModel()]);
+    await Promise.all([probeBridge(), loadOc(), loadState(), loadMi(), loadBackendModel(), loadAuth()]);
     if (!$('k-svc')) return;
     paintOverview();
     loadOverviewHistory();
@@ -478,6 +492,15 @@
         $('xi-vol-val').textContent = dev.volume;
       }
     }
+    const sp = d.speak || {};
+    if (typeof sp.speech_volume === 'number') {
+      const sv = $('xi-speak-vol');
+      if (sv && document.activeElement !== sv) {
+        sv.value = sp.speech_volume;
+        sv.style.setProperty('--fill', sp.speech_volume + '%');
+        $('xi-speak-vol-val').textContent = sp.speech_volume;
+      }
+    }
     paintChrome();
   }
 
@@ -536,8 +559,52 @@
     box.innerHTML = roots.length ? roots.map((r) => `
       <div class="row">
         <span class="name">${esc(r.path)}</span>
-        <span class="sub">${r.exists ? r.count + ' 首' : '不可见'}</span>
+        <span class="sub">${r.exists ? r.count + ' 首' : '未挂进容器'}</span>
+        <button class="btn quiet small" data-del="${esc(r.path)}" type="button" style="flex:none">移除</button>
       </div>`).join('') : '<div class="empty">还没有音乐目录</div>';
+    box.querySelectorAll('[data-del]').forEach((b) => {
+      b.onclick = () => xiRootDel(b.dataset.del);
+    });
+    // 有目录在当前容器里看不见 → 提示需要重启应用才生效
+    const note = $('xi-root-note');
+    if (note) note.hidden = !roots.some((r) => !r.exists);
+  }
+
+  async function xiRootAdd() {
+    const inp = $('xi-root-in');
+    const btn = $('xi-root-add');
+    const p = ((inp && inp.value) || '').trim();
+    if (!p) { toast('先填一个 NAS 上的绝对路径，例如 /vol1/1000/音乐', true); return; }
+    if (btn) btn.disabled = true;
+    const d = await api('/api/library/roots', { action: 'add', path: p });
+    if (btn) btn.disabled = false;
+    if (!d || !d.ok) { toast((d && d.error) || '添加失败', true); return; }
+    if (inp) inp.value = '';
+    await xiRoots();
+    xiState();
+    if (d.restart_required) toast('已记录，重启应用后才会挂进容器');
+    else toast('已添加，共 ' + (d.count || 0) + ' 首');
+  }
+
+  async function xiRootDel(p) {
+    const d = await api('/api/library/roots', { action: 'remove', path: p });
+    if (!d || !d.ok) { toast((d && d.error) || '移除失败', true); return; }
+    await xiRoots();
+    xiState();
+    toast('已移除，重启应用后释放挂载');
+  }
+
+  async function xiRootRestart() {
+    const btn = $('xi-root-restart');
+    if (btn) { btn.disabled = true; btn.textContent = '重启中…'; }
+    const d = await api('/api/app/restart', {});
+    if (!d || !d.ok) {
+      if (btn) { btn.disabled = false; btn.textContent = '重启应用'; }
+      toast((d && d.error) || '重启失败', true);
+      return;
+    }
+    toast('应用正在重启，约 20 秒后自动刷新页面');
+    setTimeout(() => location.reload(), 22000);
   }
 
   async function xiWakeLoad() {
@@ -763,6 +830,12 @@
                 <input type="range" id="xi-volume" min="0" max="100" step="1">
                 <span class="vol-num" id="xi-vol-val">—</span>
               </div>
+              <div class="vol">
+                <span class="hint">播报音量</span>
+                <input type="range" id="xi-speak-vol" min="0" max="100" step="1">
+                <span class="vol-num" id="xi-speak-vol-val">—</span>
+              </div>
+              <div class="hint" style="margin:-4px 0 10px">播报时临时把音箱抬到这个音量，说完还原；0 表示不改动（只对云端合成通道生效，原生 TTS 用设备当前音量）</div>
               <div class="upnext">
                 <div class="upnext-h">接下来</div>
                 <div id="xi-upnext"></div>
@@ -842,7 +915,7 @@
                   </label>
                 </div>
                 <div class="grid2">
-                  <label class="field" id="xi-f-path"><span>文件夹</span><input id="xi-cmd-path" placeholder="/vol1/1000/音乐文件/我的歌单"></label>
+                  <label class="field" id="xi-f-path"><span>文件夹</span><input id="xi-cmd-path" placeholder="/vol1/1000/音乐/我的歌单"></label>
                   <label class="field" id="xi-f-limit"><span>上限（0=全部）</span><input id="xi-cmd-limit" type="number" min="0" value="30"></label>
                 </div>
                 <div class="grid3">
@@ -878,7 +951,17 @@
             <input class="input" id="xi-search" placeholder="搜歌手 / 歌名，回车播放">
             <button class="btn primary small" id="xi-search-btn" type="button">播放</button>
           </div>
-          <div class="list" id="xi-roots" hidden></div>
+          <div id="xi-roots-box" hidden>
+            <div class="searchbar">
+              <input class="input" id="xi-root-in" placeholder="NAS 上的目录，例如 /vol1/1000/音乐">
+              <button class="btn primary small" id="xi-root-add" type="button">添加</button>
+            </div>
+            <div class="list" id="xi-roots"></div>
+            <p class="hint" id="xi-root-note" hidden>
+              曲库目录已变更，重启应用后才会挂进容器（约 20 秒）。
+              <button class="btn quiet small" id="xi-root-restart" type="button">重启应用</button>
+            </p>
+          </div>
           <div class="chips" id="xi-chips"></div>
           <div class="list tall" id="xi-results"><div class="empty">输入关键词搜索，点结果直接播</div></div>
         </div>
@@ -955,6 +1038,20 @@
       }, 120);
     };
 
+    // 播报音量：只影响说话，不影响音乐
+    $('xi-speak-vol').oninput = () => {
+      const el = $('xi-speak-vol');
+      el.style.setProperty('--fill', el.value + '%');
+      $('xi-speak-vol-val').textContent = el.value;
+    };
+    $('xi-speak-vol').onchange = () => {
+      const v = Number($('xi-speak-vol').value);
+      xiApi('/api/speak', { speech_volume: v }).then((d) => {
+        if (d && d.ok === false) toast(d.error || '播报音量保存失败', true);
+        else toast(v ? `播报音量 ${v}` : '播报音量：不改动音箱音量');
+      });
+    };
+
     $('xi-qrefresh').onclick = xiQueue;
     $('xi-queue').onclick = (e) => {
       const row = e.target.closest('.row');
@@ -978,10 +1075,12 @@
         .then(() => setTimeout(() => { xiState(); xiQueue(); }, 800));
     };
     $('xi-roots-toggle').onclick = () => {
-      const box = $('xi-roots');
+      const box = $('xi-roots-box');
       box.hidden = !box.hidden;
       if (!box.hidden) xiRoots();
     };
+    if ($('xi-root-add')) $('xi-root-add').onclick = xiRootAdd;
+    if ($('xi-root-restart')) $('xi-root-restart').onclick = xiRootRestart;
     $('xi-rescan').onclick = () => {
       xiApi('/api/library/rescan', {}).then(() => {
         toast('索引重建完成');
@@ -1639,6 +1738,71 @@
     return '';
   };
 
+  // ---------------- 访问保护 ----------------
+  const AUTH = { enabled: false };
+
+  async function loadAuth() {
+    try {
+      const d = await api('/api/auth/status');
+      if (d && d.ok !== false) AUTH.enabled = !!d.enabled;
+    } catch (e) { /* 保持旧值，不打断刷新 */ }
+  }
+
+  function paintAuth() {
+    const st = $('r-auth-state');
+    if (!st) return;
+    setLed('r-auth-led', AUTH.enabled ? 'ok' : 'bad');
+    st.innerHTML = `<span class="pill ${AUTH.enabled ? 'ok' : 'bad'}">${AUTH.enabled ? '已开启' : '未开启'}</span>`;
+    const btn = $('r-auth-btn');
+    if (btn) btn.textContent = AUTH.enabled ? '修改' : '设置';
+  }
+
+  function authStatus(msg, bad) {
+    const el = $('auth-status');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.className = 'dlg-status' + (bad ? ' bad' : '');
+  }
+
+  function openAuthDlg() {
+    const pw = $('auth-pw');
+    if (pw) pw.value = '';
+    authStatus(AUTH.enabled ? '已开启。留空保存等于不修改，要取消请点「关闭保护」。' : '');
+    $('auth-clear').hidden = !AUTH.enabled;
+    $('auth-save').disabled = false;
+    $('auth-mask').hidden = false;
+    if (pw) setTimeout(() => pw.focus(), 30);
+  }
+
+  function authClose() {
+    $('auth-mask').hidden = true;
+  }
+
+  async function authSave() {
+    const pw = ($('auth-pw').value || '').trim();
+    if (pw.length < 4) { authStatus('口令至少 4 位', true); return; }
+    $('auth-save').disabled = true;
+    const d = await api('/api/auth/save', { password: pw });
+    $('auth-save').disabled = false;
+    if (!d || !d.ok) { authStatus((d && d.error) || '保存失败', true); return; }
+    AUTH.enabled = !!d.enabled;
+    authClose();
+    paintAuth();
+    toast('已开启访问保护，其他设备打开要输入这个口令');
+  }
+
+  async function authClear() {
+    if (!AUTH.enabled) return;
+    $('auth-clear').disabled = true;
+    const d = await api('/api/auth/save', { password: '' });
+    $('auth-clear').disabled = false;
+    if (!d || !d.ok) { authStatus((d && d.error) || '取消失败', true); return; }
+    AUTH.enabled = false;
+    authClose();
+    paintAuth();
+    toast('已关闭访问保护，同网段可直接打开');
+  }
+
   function updPaintBtn(d) {
     const btn = $('btn-update');
     const lab = $('upd-label');
@@ -1707,6 +1871,11 @@
       note = `远端有 v${esc(t)}，但本机没有对应安装包。把它放进 <span class="mono">${esc((d.dirs || [])[0] || '')}</span> 后再点一次即可。`;
     } else {
       note = `正在监视的目录：<span class="mono">${esc((d.dirs || []).join('  ·  '))}</span>。把新的 fpk 放进去，点按钮就能装。`;
+    }
+
+    if ((d.unsafe_dirs || []).length) {
+      note += `<br><br>注意：监视目录 <span class="mono">${esc((d.unsafe_dirs || []).join('  ·  '))}</span>`
+        + ' 对同组或其他用户可写。放进这个目录的安装包会被以 root 执行，不要指向共享盘。';
     }
 
     $('upd-body').innerHTML = `<div class="dlg-rows">${rows.join('')}</div><p class="dlg-note">${note}</p>`;
@@ -1843,10 +2012,14 @@
     $('upd-cancel').onclick = () => { if (!UPD.busy) updClose(); };
     $('upd-apply').onclick = updApply;
     $('upd-mask').onclick = (e) => { if (e.target === $('upd-mask') && !UPD.busy) updClose(); };
+    $('auth-close').onclick = authClose;
+    $('auth-save').onclick = authSave;
+    $('auth-clear').onclick = authClear;
+    $('auth-mask').onclick = (e) => { if (e.target === $('auth-mask')) authClose(); };
     window.addEventListener('hashchange', route);
 
     await loadMeta();
-    await Promise.all([probeBridge(), loadOc(), loadState(), loadMi(), loadBackendModel()]);
+    await Promise.all([probeBridge(), loadOc(), loadState(), loadMi(), loadBackendModel(), loadAuth()]);
     paintChrome();
     route();
 

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>小爱音响控制台</title>
-<link rel="stylesheet" href="style.css?v=20261106-21">
+<link rel="stylesheet" href="style.css?v=20261108-02">
 <link rel="icon" href="images/icon_64.png">
 </head>
 <body>
@@ -95,6 +95,30 @@
   </div>
 </div>
 
-<script src="app.js?v=20261106-21"></script>
+<div class="mask" id="auth-mask" hidden>
+  <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <div class="dlg-head">
+      <b id="auth-title">访问保护</b>
+      <button class="icon-btn" id="auth-close" type="button" aria-label="关闭">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="dlg-body">
+      <p class="hint" id="auth-tip">控制台和桥接都直接监听局域网端口，同网段任何人都能打开。设一个口令，打开页面时就要先输入它。</p>
+      <div class="field">
+        <span>访问口令</span>
+        <input class="input" id="auth-pw" type="password" autocomplete="new-password" placeholder="至少 4 位，留空表示不修改">
+      </div>
+      <p class="hint">音箱取音频的地址不校验口令，所以放歌不受影响；口令只挡页面和接口。</p>
+    </div>
+    <div class="dlg-foot">
+      <span class="dlg-status" id="auth-status"></span>
+      <button class="btn quiet small" id="auth-clear" type="button">关闭保护</button>
+      <button class="btn primary small" id="auth-save" type="button">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js?v=20261108-02"></script>
 </body>
 </html>

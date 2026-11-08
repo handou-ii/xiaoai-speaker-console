@@ -27,6 +27,8 @@ export HUB_PORT="${TRIM_SERVICE_PORT:-8900}"
 export HUB_UI="${TRIM_APPDEST}/ui"
 export HUB_DATA="${TRIM_PKGVAR}"
 export HUB_ETC="${TRIM_PKGETC}"
+# 口令 token 要同步进桥接容器的 conf 目录，两边共用一枚
+export HUB_BRIDGE_CONF="${BRIDGE_DATA}/conf"
 export HUB_SOCK="${TRIM_APPDEST}/xiaoai-console.sock"
 export PYTHONUNBUFFERED=1
 
@@ -66,6 +68,58 @@ docker_gw() {
 bridge_running() {
     [ -n "${DOCKER}" ] || return 1
     "${DOCKER}" inspect -f '{{.State.Running}}' "${BRIDGE_NAME}" 2>/dev/null | grep -q true
+}
+
+# 可挂载目录清单，一行一个（只读）：
+#   1. 各卷下数字命名的一级目录，也就是用户主目录（/vol1/1000 这种）
+#   2. 曲库里配置、但不在上面范围内的目录（比如放在 /vol1/测试 这种共享目录里）
+#
+# 为什么不是整卷：整卷会把 @appdata 里其它应用的配置和凭据一起挂进来，
+# 而那些跟曲库毫无关系。
+# 为什么不是只挂曲库目录：那样每加一个别的卷的歌就要重建容器才生效，
+# 用户加首歌得重启一次应用。挂用户目录之后，在任何一个卷的主目录下加曲库
+# 都能立刻扫到，不用重启。
+mount_dirs() {
+    "${PY}" - "${BRIDGE_DATA}/config.json" 2>/dev/null <<'PYEOF'
+import json, os, sys
+
+vols = [v for v in ("/vol1", "/vol2", "/vol3", "/vol4", "/vol01", "/vol02")
+        if os.path.isdir(v)]
+dirs = []
+for v in vols:
+    try:
+        names = sorted(os.listdir(v))
+    except OSError:
+        continue
+    for name in names:
+        p = os.path.join(v, name)
+        # 只认纯数字目录名（用户主目录）；@ 开头的应用目录和普通共享目录都不在这里
+        if name.isascii() and name.isdigit() and os.path.isdir(p):
+            dirs.append(os.path.realpath(p))
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        roots = (json.load(f).get("music") or {}).get("roots") or []
+except Exception:
+    roots = []
+
+def covered(p, pool):
+    p = os.path.realpath(p)
+    return any(p == q or p.startswith(q + os.sep) for q in pool)
+
+extra = []
+for r in roots:
+    r = str(r).strip().rstrip("/")
+    if not r.startswith("/") or not os.path.isdir(r):
+        continue
+    # 已经在用户主目录覆盖范围内的不用再单独挂一次
+    if covered(r, dirs) or covered(r, extra):
+        continue
+    extra.append(os.path.realpath(r))
+
+for p in dirs + extra:
+    print(p)
+PYEOF
 }
 
 # OpenClaw 网关只听 127.0.0.1，容器里够不到；在 docker 网桥网关上开一个转发
@@ -131,11 +185,20 @@ bridge_up() {
         -v "${BRIDGE_SRC}/web:/app/web:ro"
     )
 
-    # 曲库目录：整卷只读挂载。界面里加任意路径都能直接生效，不用改挂载重建容器
-    local v
-    for v in /vol1 /vol2 /vol3 /vol4 /vol01 /vol02; do
-        [ -d "$v" ] && args+=(-v "${v}:${v}:ro")
-    done
+    # 用户主目录 + 曲库额外路径：只读挂载。一个都没有时退回整卷。
+    local roots root
+    roots="$(mount_dirs)"
+    if [ -n "${roots}" ]; then
+        while IFS= read -r root; do
+            [ -n "${root}" ] && args+=(-v "${root}:${root}:ro")
+        done <<EOF
+${roots}
+EOF
+    else
+        for root in /vol1 /vol2 /vol3 /vol4 /vol01 /vol02; do
+            [ -d "${root}" ] && args+=(-v "${root}:${root}:ro")
+        done
+    fi
 
     # OpenClaw 侧挂载，未装 OpenClaw 时跳过
     #   .openclaw 整目录可写：界面里"切换后端模型"要改 openclaw.json，

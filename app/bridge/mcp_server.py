@@ -9,8 +9,8 @@ OpenClaw 配置示例（~/.openclaw/openclaw.json）：
   "mcpServers": {
     "xiaoai": {
       "transport": "stdio",
-      "command": "/vol1/docker/xiaoai-bridge/.venv/bin/python",
-      "args": ["/vol1/docker/xiaoai-bridge/mcp_server.py"],
+      "command": "/path/to/xiaoai-bridge/.venv/bin/python",
+      "args": ["/path/to/xiaoai-bridge/mcp_server.py"],
       "env": { "XIAOAI_BRIDGE_URL": "http://127.0.0.1:8790" }
     }
   }

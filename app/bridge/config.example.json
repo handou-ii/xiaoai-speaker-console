@@ -87,7 +87,9 @@
   "log_file": "./logs/bridge.log",
   "speak": {
     "tts_mode": "edge",
-    "edge_voice": "zh-CN-XiaoyiNeural",
+    "edge_voice": "zh-CN-XiaoxiaoNeural",
+    "edge_volume": "+100%",
+    "speech_volume": 60,
     "max_seg_chars": 60,
     "tts_timeout": 12,
     "static_dir": "./media",
