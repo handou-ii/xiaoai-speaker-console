@@ -131,30 +131,44 @@ class Speaker:
             log.warning("player_stop 失败: %s", e)
             return None
 
-    async def stop_burst(self, delays=(0.0, 0.25, 0.6)):
-        """连发几次 stop，专治「小爱开口了但控制台还没打断」。
+    async def stop_burst(self, plan=((0.0, "pause"), (0.4, "stop"), (1.0, "stop"))):
+        """连发几次控制指令，专治「小爱开口了但控制台还没打断」。
 
         小米的对话记录是在回答生成完之后才写入的：我们拿到 query 时，小爱
         往往已经念出前几个字。这时单发一次 stop 有两种落空方式——
         ① 设备还没真正开播，指令落在空处，之后它照念；
         ② 指令丢了或延迟到，等它到达已经过去一两句。
-        所以按 0 / 0.25 / 0.6 秒连发三次，覆盖这段窗口。
+
+        第一发用 pause 而不是 stop：同一台设备上实测 pause 往返约 0.60 秒、
+        stop 约 0.88 秒（都是走小米的远程代理），pause 能让声音早约 0.3 秒停下；
+        后面两发 stop 兜住「pause 没落实」的情况，同时把播放状态清干净。
 
         每次发之前看 _audio_gen 有没有变：play_url 一推新音频就 +1，
         说明已经进入「播自己的东西」阶段，立刻收手，绝不把刚起的音乐停掉。
         """
         gen = self._audio_gen
 
-        async def once(d):
+        async def once(d, action):
             if d:
                 await asyncio.sleep(d)
             if self._audio_gen != gen:
                 log.info("停止序列中止：已经推送新音频")
                 return
-            await self.stop()
+            await self._play_action(action)
 
-        # 并发发，不串行：单次 stop 往返要 0.3~0.8 秒，串行会把第三次推到 1.5 秒后
-        await asyncio.gather(*(once(d) for d in delays))
+        # 并发发，不串行：单次往返 0.6~0.9 秒，串行会把第三次推到 2 秒后
+        await asyncio.gather(*(once(d, a) for d, a in plan))
+
+    async def _play_action(self, action):
+        try:
+            ret = await self.auth.mina.ubus_request(
+                self.device_id, "player_play_operation", "mediaplayer",
+                {"action": action, "media": "app_ios"})
+            log.info("player_%s -> %s", action, (ret or {}).get("code"))
+            return ret
+        except Exception as e:
+            log.warning("player_%s 失败: %s", action, e)
+            return None
 
     async def is_playing(self):
         """是否正在播放。注意 status 藏在 data.info 这个 JSON 字符串里，不是 data 直接给"""
