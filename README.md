@@ -138,6 +138,12 @@ curl -fL -o xiaoai-speaker-console-1.5.6.fpk \
 - 用账号自动化控制音箱可能与服务条款冲突，风险由使用者自行承担。
 - 本项目与小米、微软均无隶属关系。
 
+## 支持这个项目
+
+开源免费、无广告、没有付费版，全部功能都不打赏也能用。如果它确实让你方便了一点，
+欢迎随意金额打赏：见 [DONATE.md](DONATE.md)。控制台「概览」页底部也会显示收款码，
+把图片放到 `/vol1/@appdata/xiaoai-console/bridge/conf/donate.png` 即可。
+
 ## 许可
 
 个人非商业使用，详见 `app/LICENSE`；第三方代码归属见 `app/NOTICE`。

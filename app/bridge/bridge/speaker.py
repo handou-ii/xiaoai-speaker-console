@@ -83,6 +83,24 @@ def split_text(text, max_len=60, max_total=80):
 
 
 
+# 云端合成（edge-tts）可选音色。id 直接就是 edge-tts 的 voice 名，
+# 界面上只显示 name + desc，改成别的值一律按默认音色处理。
+DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"
+EDGE_VOICES = [
+    {"id": "zh-CN-XiaoxiaoNeural", "name": "晓晓", "desc": "女声 · 自然亲切（默认）"},
+    {"id": "zh-CN-XiaoyiNeural", "name": "晓伊", "desc": "女声 · 偏活泼"},
+    {"id": "zh-CN-YunxiNeural", "name": "云希", "desc": "男声 · 年轻"},
+    {"id": "zh-CN-YunjianNeural", "name": "云健", "desc": "男声 · 浑厚有力"},
+    {"id": "zh-CN-YunyangNeural", "name": "云扬", "desc": "男声 · 新闻播报腔"},
+    {"id": "zh-CN-YunxiaNeural", "name": "云夏", "desc": "男声 · 少年感"},
+    {"id": "zh-CN-liaoning-XiaobeiNeural", "name": "晓北", "desc": "女声 · 东北话"},
+    {"id": "zh-CN-shaanxi-XiaoniNeural", "name": "晓妮", "desc": "女声 · 陕西话"},
+    {"id": "zh-HK-HiuMaanNeural", "name": "曉曼", "desc": "女声 · 粤语"},
+    {"id": "zh-TW-HsiaoChenNeural", "name": "曉臻", "desc": "女声 · 台湾腔"},
+]
+EDGE_VOICE_IDS = {v["id"] for v in EDGE_VOICES}
+
+
 def mp3_duration(path):
     """播报音频时长（秒），失败返回 None"""
     d = duration_of(path, default=0.0)
@@ -95,12 +113,14 @@ class Speaker:
         self.cfg = cfg
         self.device_id = cfg.device.get("device_id", "")
         self.tts_mode = cfg.speak.get("tts_mode", "edge")
-        self.voice = cfg.speak.get("edge_voice", "zh-CN-XiaoxiaoNeural")
+        self.voice = cfg.speak.get("edge_voice", DEFAULT_VOICE)
         self.max_seg = int(cfg.speak.get("max_seg_chars", 60))
         self.max_total = int(cfg.speak.get("max_say_chars", 80))
         # 单段合成超时。edge-tts 偶尔会卡住几十秒才报 "No audio was received"，
         # 这段时间音箱会把上一段播报循环重放（实测 42 秒），必须自己卡死上限。
         self.tts_timeout = float(cfg.speak.get("tts_timeout") or 12)
+        # 打断点与播报时长估算（毫秒），可在 config.timing 里按机型微调
+        self.timing = (cfg.get("timing") or {})
         self.static_dir = cfg.abspath(cfg.speak.get("static_dir") or "./media")
         self.public_base = (cfg.speak.get("public_base") or "").rstrip("/")
         if not self.public_base:
@@ -131,7 +151,31 @@ class Speaker:
             log.warning("player_stop 失败: %s", e)
             return None
 
-    async def stop_burst(self, plan=((0.0, "pause"), (0.4, "stop"), (1.0, "stop"))):
+    def _ms(self, key, default_ms):
+        """从 config.timing 读毫秒值，读不到/非法就用默认"""
+        try:
+            return max(0.0, float(self.timing.get(key, default_ms))) / 1000.0
+        except (TypeError, ValueError):
+            return default_ms / 1000.0
+
+    def _stop_plan(self):
+        """停止序列：第一发 pause（比 stop 早约 0.3 秒停下），后面几发 stop 兜底。
+
+        config.timing.stop_plan_ms 可以改时机，例如 [0, 300, 800]。
+        """
+        raw = self.timing.get("stop_plan_ms")
+        plan = []
+        if isinstance(raw, (list, tuple)):
+            for v in list(raw)[:4]:
+                try:
+                    delay = max(0.0, float(v)) / 1000.0
+                except (TypeError, ValueError):
+                    continue
+                # 第一发必须是 pause：即使前面有脏值被跳过，也不能变成 stop 打头
+                plan.append((delay, "pause" if not plan else "stop"))
+        return tuple(plan) or ((0.0, "pause"), (0.4, "stop"), (1.0, "stop"))
+
+    async def stop_burst(self, plan=None):
         """连发几次控制指令，专治「小爱开口了但控制台还没打断」。
 
         小米的对话记录是在回答生成完之后才写入的：我们拿到 query 时，小爱
@@ -146,6 +190,7 @@ class Speaker:
         每次发之前看 _audio_gen 有没有变：play_url 一推新音频就 +1，
         说明已经进入「播自己的东西」阶段，立刻收手，绝不把刚起的音乐停掉。
         """
+        plan = plan or self._stop_plan()
         gen = self._audio_gen
 
         async def once(d, action):
@@ -230,6 +275,11 @@ class Speaker:
             return {"ok": False, "error": str(e)}
 
     # ---------- 播报音量 ----------
+    def resolve_voice(self):
+        """当前音色：每次现读配置，值不认识就用默认音色"""
+        v = str(self.cfg.speak.get("edge_voice") or DEFAULT_VOICE).strip()
+        return v if v in EDGE_VOICE_IDS else DEFAULT_VOICE
+
     def speech_volume(self):
         """播报时希望达到的设备音量，0 表示不干预"""
         try:
@@ -367,9 +417,14 @@ class Speaker:
         先确认进入播放态、再等它离开播放态，比按字数硬估准得多。
         万一起播没抓到（例如音乐同时在放，状态一直是 1），退回按字数估算，不会卡死。
         """
-        est = max(1.2, len(text) * 0.26 + 1.0)
+        # 这几个时间量不同机型/网络下不一样，全部走 config.timing：
+        #   speech_char_ms  每字估算毫秒、speech_base_ms 固定开销、speech_min_ms 下限
+        #   speech_margin_ms 估算外的余量、start_wait_ms 等进入播放态的上限、poll_ms 轮询间隔
+        est = max(self._ms("speech_min_ms", 1200),
+                  len(text) * self._ms("speech_char_ms", 260)
+                  + self._ms("speech_base_ms", 1000))
         t0 = time.time()
-        deadline = t0 + est + 2.5
+        deadline = t0 + est + self._ms("speech_margin_ms", 2500)
         started = False
         while time.time() < deadline:
             playing = await self.is_playing()
@@ -378,9 +433,9 @@ class Speaker:
             elif playing is False and started:
                 log.info("原生播报念完（%.1fs）", time.time() - t0)
                 return
-            if not started and time.time() - t0 > 2.0:
+            if not started and time.time() - t0 > self._ms("start_wait_ms", 2000):
                 break                      # 一直没进入播放态，不再空等
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(self._ms("poll_ms", 200))
         remain = est - (time.time() - t0)
         if remain > 0:
             await asyncio.sleep(remain)
@@ -411,10 +466,12 @@ class Speaker:
         """合成并缓存 mp3，返回本地路径"""
         import edge_tts
 
+        # 音色每次现读配置：换音色不用重启容器，和 edge_volume 一个道理
+        voice = self.resolve_voice()
         # 音量与静音垫都进缓存键：改过播报增益或垫长之后，旧文件不能继续复用，
         # 否则会出现「设置改了但声音没变」的假象。
         vol = str(self.cfg.speak.get("edge_volume") or "+100%")
-        name = hashlib.md5(("%s|%s|%s|g1|pad%d" % (text, self.voice, vol, PAD_TAIL))
+        name = hashlib.md5(("%s|%s|%s|g1|pad%d" % (text, voice, vol, PAD_TAIL))
                            .encode()).hexdigest()[:16]
         path = os.path.join(self.static_dir, f"{name}.mp3")
         if os.path.isfile(path) and os.path.getsize(path) > 1024:
@@ -424,7 +481,7 @@ class Speaker:
         tmp = f"{path}.part"
         try:
             await asyncio.wait_for(
-                edge_tts.Communicate(text, self.voice, volume=vol).save(tmp),
+                edge_tts.Communicate(text, voice, volume=vol).save(tmp),
                 timeout=self.tts_timeout)
             if not os.path.isfile(tmp) or os.path.getsize(tmp) < 1024:
                 raise RuntimeError("合成结果为空")

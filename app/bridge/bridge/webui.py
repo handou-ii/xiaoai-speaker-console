@@ -19,6 +19,7 @@ from .agent import canonical as oc_canonical, host_ip as oc_host_ip
 from .rules import (WakeMatcher, names_from_patterns, normalize,
                     strip_device_wake)
 from . import security
+from .speaker import DEFAULT_VOICE, EDGE_VOICES, EDGE_VOICE_IDS
 
 log = logging.getLogger("webui")
 
@@ -73,6 +74,7 @@ def attach(app, bridge, web_dir):
     router = bridge.router
     auth = bridge.auth
     agent = bridge.agent
+    llm = bridge.llm
     static_dir = speaker.static_dir
 
     # ---------- 音频 ----------
@@ -216,7 +218,9 @@ def attach(app, bridge, web_dir):
             "ok": True,
             "speech_volume": sv,
             "edge_volume": str(cfg.speak.get("edge_volume") or "+100%"),
+            "edge_voice": str(cfg.speak.get("edge_voice") or DEFAULT_VOICE),
             "tts_mode": str(cfg.speak.get("tts_mode") or "edge"),
+            "voices": EDGE_VOICES,
         }
 
     async def api_speak_get(_request):
@@ -244,10 +248,89 @@ def attach(app, bridge, web_dir):
                 return {"ok": False, "error": "TTS 通道只能是 edge（云端合成）或 xiaomi（设备本地）"}
             # 走接口改会同时更新内存里的配置，不必重启容器
             cfg.set("speak", "tts_mode", value=m)
+        if "edge_voice" in body:
+            v = str(body["edge_voice"]).strip()
+            if v not in EDGE_VOICE_IDS:
+                return {"ok": False, "error": "不认识的音色：%s" % v}
+            cfg.set("speak", "edge_voice", value=v)
         cfg.save()
         v = _speak_view()
-        history.action("播报音量 → %s（合成增益 %s）" % (v["speech_volume"], v["edge_volume"]))
+        history.action("播报设置 → 通道 %s / 音色 %s / 播报音量 %s（合成增益 %s）"
+                       % ("云端合成" if v["tts_mode"] == "edge" else "小米原生",
+                          v["edge_voice"], v["speech_volume"], v["edge_volume"]))
         return v
+
+    # ---------- 歌曲画像 ----------
+    tagger = bridge.tagger
+
+    async def api_tags(_request):
+        return web.json_response(tagger.status() if tagger else {"ok": False})
+
+    @_need_json
+    async def api_tags_build(body):
+        if not tagger:
+            return {"ok": False, "error": "画像模块没初始化"}
+        r = tagger.start(force=bool(body.get("force")))
+        if r.get("ok"):
+            history.action("歌曲画像生成已开始", detail="force=%s" % bool(body.get("force")))
+        return r
+
+    async def api_tags_one(request):
+        """看某首歌被标成什么样（排查用）"""
+        tid = (request.query.get("id") or "").strip()
+        t = bridge.library.get(tid) if tid else None
+        if not t:
+            return web.json_response({"ok": False, "error": "没有这首歌"})
+        return web.json_response({"ok": True, "track": t.as_dict(),
+                                  "tags": tagger.tags_of(t) if tagger else None})
+
+    # ---------- 打赏 ----------
+    # config.json 是单文件挂载，conf/ 才是整目录挂载 → 收款码必须放 conf 下
+    DONATE_IMG = cfg.abspath("./conf/donate.png")
+
+    async def api_donate(_request):
+        return web.json_response({"ok": True,
+                                  "has": os.path.isfile(DONATE_IMG)})
+
+    async def api_donate_qr(_request):
+        if not os.path.isfile(DONATE_IMG):
+            raise web.HTTPNotFound()
+        return web.FileResponse(DONATE_IMG)
+
+    # ---------- AI 模型（直连 OpenAI 兼容端点） ----------
+    def _llm_view():
+        d = llm.status() if llm else {"enabled": False, "configured": False}
+        d["ok"] = True
+        return d
+
+    async def api_llm_get(_request):
+        return web.json_response(_llm_view())
+
+    @_need_json
+    async def api_llm_save(body):
+        """base_url / 模型名 / 密钥 / 开关。密钥留空 = 不修改，clear_key 才清空"""
+        if "enabled" in body:
+            cfg.set("llm", "enabled", value=bool(body["enabled"]))
+        if "base_url" in body:
+            cfg.set("llm", "base_url", value=str(body["base_url"]).strip())
+        if "model" in body:
+            cfg.set("llm", "model", value=str(body["model"]).strip())
+        if body.get("clear_key"):
+            cfg.set("llm", "api_key", value="")
+        elif str(body.get("api_key") or "").strip():
+            cfg.set("llm", "api_key", value=str(body["api_key"]).strip())
+        cfg.save()
+        llm.apply()
+        history.action("AI 模型配置已保存：%s / %s"
+                       % (llm.model or "未填模型", llm.base_raw or "未填地址"))
+        return _llm_view()
+
+    @_need_json
+    async def api_llm_test(body):
+        if not llm.configured:
+            return {"ok": False, "error": "先填 base_url 与模型名再测"}
+        r = await llm.test(str(body.get("text") or "只回两个字：通了"))
+        return r
 
     # ---------- 曲库 / 音乐路径 ----------
     @_need_json
@@ -442,7 +525,7 @@ def attach(app, bridge, web_dir):
         out = {"ok": True, "hit": True, "bare": bare, "intent": intent,
                "wake_name": getattr(bridge.matcher, "last_name", None),
                "wake_scope": getattr(bridge.matcher, "last_scope", None),
-               "plan": plan.as_dict()}
+               "plan": plan.as_dict() if plan else None}
         if body.get("execute"):
             reply, ms = await bridge._run_plan(plan)
             out["executed"] = True
@@ -980,8 +1063,19 @@ def attach(app, bridge, web_dir):
     async def api_state(_request):
         st = await speaker.get_state(ttl=3.0)
         p = player.status()
+        # 设备「离线」有两种完全不同的原因，界面必须分开显示：
+        #   ① 登录态失效（passToken 过期）→ 我们根本发不出指令，扫码就能好
+        #   ② 音箱真的断网/断电        → 只能等设备恢复
+        # 只看 online=false 会把 ① 误报成 ②，让人去查音箱电源。
+        acc = auth.status()
+        # 注意：status() 的 needs_login 只看「本地还有没有 token 文件」，
+        # 失效的旧 token 也会让它报 False。真正判据是 last_auth_error
+        # （passToken 失效 / 续期被拒时会被写入）。
+        auth_err = (getattr(auth, "last_auth_error", "") or acc.get("auth_error") or "").strip()
         return web.json_response({
             "ok": True,
+            "auth": {"needs_login": bool(acc.get("needs_login") or auth_err),
+                     "error": auth_err},
             "device": {
                 "name": cfg.device.get("name", "小爱音箱"),
                 "id": cfg.device.get("device_id", ""),
@@ -996,6 +1090,9 @@ def attach(app, bridge, web_dir):
                 "count": len(library.tracks),
                 "roots": library.roots,
                 "roots_info": library.roots_info(),
+                "genre_covered": sum(1 for t in library.tracks if t.genre),
+                "genres": [{"name": k, "count": v}
+                           for k, v in library.genres()[:12]],
                 "scanned_at": library.loaded_at,
             },
             "account": {
@@ -1193,6 +1290,14 @@ def attach(app, bridge, web_dir):
     app.router.add_get("/api/openclaw/backend-models", api_backend_models)
     app.router.add_post("/api/openclaw/backend-model", api_backend_model_set)
     app.router.add_get("/api/openclaw/sessions", api_openclaw_sessions)
+    app.router.add_get("/api/tags", api_tags)
+    app.router.add_post("/api/tags/build", api_tags_build)
+    app.router.add_get("/api/tags/one", api_tags_one)
+    app.router.add_get("/api/donate", api_donate)
+    app.router.add_get("/api/donate/qr", api_donate_qr)
+    app.router.add_get("/api/llm", api_llm_get)
+    app.router.add_post("/api/llm/config", api_llm_save)
+    app.router.add_post("/api/llm/test", api_llm_test)
     app.router.add_get("/api/mcp", api_mcp)
     app.router.add_get("/api/state", api_state)
     app.router.add_get("/api/status", api_status)

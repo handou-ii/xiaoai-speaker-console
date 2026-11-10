@@ -313,6 +313,23 @@
         </div>
       </div>
 
+      <div class="panel" id="donate-panel" hidden>
+        <div class="panel-head">
+          <div class="panel-title">支持这个项目</div>
+          <div class="right"><span class="pill" id="donate-pill">为爱发电</span></div>
+        </div>
+        <div class="panel-body">
+          <p class="panel-note">
+            这个项目开源免费、没有广告，也没有任何「付费解锁」或「高级版」——全部功能都不打赏也能用。
+            如果它确实让你方便了一点，欢迎随意金额打赏，纯属鼓励。
+          </p>
+          <div id="donate-qr-wrap" hidden style="text-align:center;margin:6px 0 10px">
+            <img id="donate-qr" alt="收款码" style="width:100%;max-width:420px;border-radius:8px">
+          </div>
+          <p class="hint" id="donate-tip" style="margin:0"></p>
+        </div>
+      </div>
+
       <p class="hint" style="margin-top:14px">
         信号链从上到下只走本机：音箱由小米云下发，桥接与控制台同机，网关走 127.0.0.1。
         点任意节点可跳到对应页面。
@@ -325,6 +342,51 @@
     $('ch-bridge').onclick = () => { location.hash = '#/xiaoai'; };
     $('ch-gw').onclick = () => { location.hash = '#/openclaw'; };
     $('ch-model').onclick = () => { location.hash = '#/openclaw'; };
+  }
+
+  // 顶栏「关于」不做弹层：直接回概览页，滚到底部的「支持这个项目」卡片并短暂高亮
+  function gotoAbout() {
+    const reveal = (tries) => {
+      const el = $('donate-panel');
+      if (!el) {
+        if (tries > 0) setTimeout(() => reveal(tries - 1), 120);
+        return;
+      }
+      el.hidden = false;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('flash');
+      setTimeout(() => el.classList.remove('flash'), 1800);
+    };
+    if (location.hash && location.hash !== '#/' ) {
+      location.hash = '#/';
+      setTimeout(() => reveal(10), 80);
+    } else {
+      reveal(10);
+    }
+  }
+
+  async function paintDonate() {
+    const panel = $('donate-panel');
+    if (!panel) return;
+    panel.hidden = false;
+    let d = null;
+    try { d = await api('/proxy/bridge/api/donate'); } catch (e) { d = null; }
+    const has = !!(d && d.has);
+    const wrap = $('donate-qr-wrap');
+    const tip = $('donate-tip');
+    if (has) {
+      const img = $('donate-qr');
+      img.onerror = () => {
+        $('donate-qr-wrap').hidden = true;
+        if (tip) tip.textContent = '收款码读不出来，检查 conf/donate.png 是不是有效图片。';
+      };
+      img.src = BASE + 'proxy/bridge/api/donate/qr?t=' + Date.now();
+      if (wrap) wrap.hidden = false;
+      if (tip) tip.textContent = '扫码打赏，金额随意。打赏是感谢，不构成购买或服务承诺。';
+    } else if (tip) {
+      if (wrap) wrap.hidden = true;
+      tip.textContent = '把收款码图片命名为 donate.png 放进应用的 conf 目录，刷新后就会显示在这里。';
+    }
   }
 
   function paintOverview() {
@@ -424,6 +486,7 @@
     if (!$('k-svc')) return;
     paintOverview();
     loadOverviewHistory();
+    paintDonate();
     stamp();
   }
 
@@ -435,7 +498,8 @@
     mode: ['mode'],
     say: ['text'],
   };
-  const XI = { timer: null, cmds: [], actionTypes: [], editing: null, playing: false };
+  const XI = { timer: null, cmds: [], actionTypes: [], editing: null, playing: false,
+               artists: [], artistsOpen: false };
   const xiApi = (path, body, method) => api('/proxy/bridge' + path, body, method);
 
   function xiStopTimer() {
@@ -458,7 +522,11 @@
 
     const pill = $('xi-dev');
     pill.className = 'pill ' + (dev.online ? 'ok' : 'bad');
-    pill.innerHTML = `<i class="led ${dev.online ? 'ok' : 'bad'}"></i>${dev.online ? esc(dev.name || '设备在线') : '设备离线'}`;
+    const needLogin = !dev.online && d.auth && d.auth.needs_login;
+    pill.title = needLogin ? (d.auth.error || '小米账号登录已失效') : '';
+    pill.innerHTML = `<i class="led ${dev.online ? 'ok' : 'bad'}"></i>${dev.online
+      ? esc(dev.name || '设备在线')
+      : (needLogin ? '登录已失效 · 去「账号」扫码' : '设备离线')}`;
     $('xi-meta').textContent = `${dev.hardware || '—'} · 曲库 ${fmtNum(lib.count)} 首 · 已运行 ${fmtUptime(en.uptime)}`;
     const lc = $('xi-libcount');
     if (lc) lc.textContent = fmtNum(lib.count) + ' 首';
@@ -501,6 +569,39 @@
         $('xi-speak-vol-val').textContent = sp.speech_volume;
       }
     }
+    // 播报通道 + 音色：通道决定用云端合成还是设备自己念，音色只影响云端合成
+    const ttsMode = sp.tts_mode === 'xiaomi' ? 'xiaomi' : 'edge';
+    document.querySelectorAll('#xi-tts-mode button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.tts === ttsMode);
+    });
+    const vs = $('xi-voice');
+    if (vs && Array.isArray(sp.voices) && sp.voices.length) {
+      if (!vs.dataset.ready) {
+        vs.innerHTML = sp.voices
+          .map((v) => `<option value="${esc(v.id)}">${esc(v.name)} · ${esc(v.desc)}</option>`)
+          .join('');
+        vs.dataset.ready = '1';
+      }
+      if (document.activeElement !== vs) vs.value = sp.edge_voice || sp.voices[0].id;
+      vs.disabled = ttsMode === 'xiaomi';
+      const vd = $('xi-voice-desc');
+      if (vd) {
+        const cur = sp.voices.find((v) => v.id === sp.edge_voice);
+        vd.textContent = ttsMode === 'xiaomi'
+          ? '原生通道用设备自己的声音，音色与播报音量都不生效'
+          : (cur ? '' : '音色未识别，按默认晓晓播报');
+      }
+    }
+    const svEl = $('xi-speak-vol');
+    if (svEl) {
+      svEl.disabled = ttsMode === 'xiaomi';
+      const sh = $('xi-speak-hint');
+      if (sh) {
+        sh.textContent = ttsMode === 'xiaomi'
+          ? '原生 TTS 用设备当前音量，这里不生效；要调大小请用上面的「音量」'
+          : '播报时临时把音箱抬到这个音量，说完还原；0 表示不改动音箱音量';
+      }
+    }
     paintChrome();
   }
 
@@ -530,10 +631,133 @@
       await new Promise((r) => setTimeout(r, 1200));
     }
     const items = ((d && d.artists) || []).filter((x) => x.name && x.name !== '未知');
-    box.innerHTML = items.length
-      ? items.slice(0, 60).map((x) =>
+    XI.artists = items.slice(0, 60);
+    paintArtists();
+  }
+
+  // 歌手芯片默认只铺一行多，剩下的收进「全部 N 位」——原来一次铺 60 个，
+  // 把整个曲库面板撑到屏幕大半屏，搜索框反而被挤上去
+  function paintArtists() {
+    const box = $('xi-chips');
+    if (!box) return;
+    const all = XI.artists || [];
+    const n = XI.artistsOpen ? all.length : 12;
+    box.innerHTML = all.length
+      ? all.slice(0, n).map((x) =>
         `<button class="chip-btn" data-artist="${esc(x.name)}">${esc(x.name)}<b>${x.count}</b></button>`).join('')
       : '<span class="chip-hint">曲库索引还没回来，点右上「重建索引」再试</span>';
+    const btn = $('xi-chips-toggle');
+    if (btn) {
+      btn.hidden = all.length <= 12;
+      btn.textContent = XI.artistsOpen ? '收起' : `全部 ${all.length} 位`;
+    }
+  }
+
+  // ---------------- AI 模型（直连 OpenAI 兼容端点） ----------------
+  async function llmLoad() {
+    let d = null;
+    try { d = await xiApi('/api/llm'); } catch (e) { return; }
+    if (!d || d.ok === false) return;
+    const st = $('llm-state');
+    if (st) {
+      const on = !!d.enabled && !!d.configured;
+      st.textContent = !d.configured ? '未配置' : (on ? (d.online ? '已连通' : '待测试') : '未启用');
+      st.className = 'pill' + (on && d.online ? ' ok' : '');
+    }
+    const base = $('llm-base');
+    if (base && document.activeElement !== base) base.value = d.base_url || '';
+    const model = $('llm-model');
+    if (model && document.activeElement !== model) model.value = d.model || '';
+    if ($('llm-on')) $('llm-on').checked = !!d.enabled;
+    const ms = $('llm-ms');
+    if (ms) ms.textContent = d.last_ms ? `上次 ${d.last_ms} ms` : '';
+    const hint = $('llm-hint');
+    if (hint) {
+      hint.textContent = d.key_auto ? '本机网关，密钥已自动读取'
+        : (d.has_key ? '已存密钥（留空不修改）' : '还没有密钥，多数公共端点需要');
+    }
+  }
+
+  function llmBind() {
+    const save = $('llm-save');
+    if (save) {
+      save.onclick = async () => {
+        save.disabled = true;
+        try {
+          const d = await xiApi('/api/llm/config', {
+            enabled: $('llm-on').checked,
+            base_url: $('llm-base').value.trim(),
+            model: $('llm-model').value.trim(),
+            api_key: $('llm-key').value.trim(),
+          });
+          if (d && d.ok === false) { toast(d.error || '保存失败', true); return; }
+          if ($('llm-key')) $('llm-key').value = '';
+          toast('AI 模型配置已保存');
+          llmLoad();
+        } finally { save.disabled = false; }
+      };
+    }
+    const test = $('llm-test');
+    if (test) {
+      test.onclick = async () => {
+        const old = test.textContent;
+        test.disabled = true;
+        test.textContent = '测试中';
+        if ($('llm-hint')) $('llm-hint').textContent = '正在请求…';
+        try {
+          const d = await xiApi('/api/llm/test', {});
+          const h = $('llm-hint');
+          if (d && d.ok) {
+            if (h) h.textContent = `回了「${d.reply || '空'}」，${d.ms} ms`;
+            toast(`连接正常，${d.ms} ms`);
+          } else {
+            if (h) h.textContent = '失败：' + ((d && d.error) || '未知错误');
+            toast('连接失败', true);
+          }
+        } catch (e) {
+          if ($('llm-hint')) $('llm-hint').textContent = '失败：' + e.message;
+        } finally {
+          test.disabled = false;
+          test.textContent = old;
+          llmLoad();
+        }
+      };
+    }
+  }
+
+  async function xiTags() {
+    const t = $('xi-tag-text');
+    if (!t) return;
+    let d = null;
+    try { d = await xiApi('/api/tags'); } catch (e) { d = null; }
+    if (!d || d.ok === false) { t.textContent = '不可用'; return; }
+    const cov = d.covered || 0;
+    const tot = d.total || 0;
+    const pct = tot ? Math.round(cov * 100 / tot) : 0;
+    if (d.running) {
+      t.textContent = `生成中 ${d.done}/${d.queued}`;
+    } else if (!d.llm) {
+      t.textContent = '未配置模型';
+    } else {
+      t.textContent = `${fmtNum(cov)}/${fmtNum(tot)}（${pct}%）${cov < tot ? ' · 未全覆盖' : ''}`;
+    }
+    const btn = $('xi-tag-btn');
+    if (btn) {
+      btn.disabled = !!d.running;
+      btn.textContent = d.running ? '生成中' : (cov && cov < tot ? '补标新增' : '生成画像');
+    }
+  }
+
+  async function xiTagsBuild(force) {
+    const btn = $('xi-tag-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '生成中'; }
+    try {
+      const d = await xiApi('/api/tags/build', { force: !!force });
+      if (d && d.ok === false) toast(d.error || '启动失败', true);
+      else toast('已开始生成歌曲画像，可后台跑');
+    } finally {
+      xiTags();
+    }
   }
 
   async function xiSearch() {
@@ -831,11 +1055,25 @@
                 <span class="vol-num" id="xi-vol-val">—</span>
               </div>
               <div class="vol">
+                <span class="hint">播报通道</span>
+                <div class="seg" id="xi-tts-mode">
+                  <button type="button" data-tts="edge">云端合成</button>
+                  <button type="button" data-tts="xiaomi">小米原生</button>
+                </div>
+                <span style="flex:1"></span>
+                <button class="btn ghost small" id="xi-voice-test" type="button">试听</button>
+              </div>
+              <div class="vol">
+                <span class="hint">音色</span>
+                <select class="select" id="xi-voice" style="flex:1 1 auto;min-width:0;max-width:230px;width:auto"></select>
+                <span class="hint" id="xi-voice-desc" style="margin:0;flex:1"></span>
+              </div>
+              <div class="vol">
                 <span class="hint">播报音量</span>
                 <input type="range" id="xi-speak-vol" min="0" max="100" step="1">
                 <span class="vol-num" id="xi-speak-vol-val">—</span>
               </div>
-              <div class="hint" style="margin:-4px 0 10px">播报时临时把音箱抬到这个音量，说完还原；0 表示不改动（只对云端合成通道生效，原生 TTS 用设备当前音量）</div>
+              <div class="hint" id="xi-speak-hint" style="margin:-4px 0 10px">播报时临时把音箱抬到这个音量，说完还原；0 表示不改动音箱音量</div>
               <div class="upnext">
                 <div class="upnext-h">接下来</div>
                 <div id="xi-upnext"></div>
@@ -938,10 +1176,13 @@
         </div>
       </div>
 
+      <div class="cols">
+        <div class="col">
       <div class="panel">
         <div class="panel-head">
           <div class="panel-title">本地曲库 <span class="pill" id="xi-libcount">—</span></div>
           <div class="right">
+            <button class="btn quiet small" id="xi-chips-toggle" type="button" hidden>全部歌手</button>
             <button class="btn quiet small" id="xi-roots-toggle" type="button">音乐路径</button>
             <button class="btn quiet small" id="xi-rescan" type="button">重建索引</button>
           </div>
@@ -951,6 +1192,10 @@
             <input class="input" id="xi-search" placeholder="搜歌手 / 歌名，回车播放">
             <button class="btn primary small" id="xi-search-btn" type="button">播放</button>
           </div>
+          <p class="hint" id="xi-tag-hint" style="margin:0 0 8px">
+            歌曲画像：<b id="xi-tag-text">—</b>
+            <button class="btn quiet small" id="xi-tag-btn" type="button">生成画像</button>
+          </p>
           <div id="xi-roots-box" hidden>
             <div class="searchbar">
               <input class="input" id="xi-root-in" placeholder="NAS 上的目录，例如 /vol1/1000/音乐">
@@ -964,6 +1209,30 @@
           </div>
           <div class="chips" id="xi-chips"></div>
           <div class="list tall" id="xi-results"><div class="empty">输入关键词搜索，点结果直接播</div></div>
+        </div>
+      </div>
+        </div>
+        <div class="col">
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">AI 模型 <span class="pill" id="llm-state">未配置</span></div>
+          <div class="right"><span class="hint" id="llm-ms" style="margin:0"></span></div>
+        </div>
+        <div class="panel-body">
+          <p class="panel-note">填任何 OpenAI 兼容端点。规则都没命中时，交给这里的模型判断该放什么歌；它只能调播放类工具，碰不到文件和系统。</p>
+          <label class="field"><span>Base URL</span><input id="llm-base" placeholder="https://api.example.com/v1，只填域名也行"></label>
+          <div class="grid2">
+            <label class="field"><span>模型名</span><input id="llm-model" placeholder="glm-5.3-flash"></label>
+            <label class="field"><span>密钥</span><input id="llm-key" type="password" placeholder="留空＝不修改"></label>
+          </div>
+          <label class="check"><input type="checkbox" id="llm-on"><span>启用这条通道</span></label>
+          <div class="btnrow">
+            <button class="btn primary small" id="llm-save" type="button">保存</button>
+            <button class="btn ghost small" id="llm-test" type="button">测试连接</button>
+            <span class="hint" id="llm-hint" style="margin:0"></span>
+          </div>
+        </div>
+      </div>
         </div>
       </div>
 
@@ -997,6 +1266,9 @@
     xiState();
     xiQueue();
     xiArtists();
+    xiTags();
+    llmBind();
+    llmLoad();
     xiWakeLoad();
     xiCmds();
     xiHistory();
@@ -1052,6 +1324,47 @@
       });
     };
 
+    // 播报通道：云端合成（音色可选）/ 小米原生（设备自己念）
+    document.querySelectorAll('#xi-tts-mode button').forEach((b) => {
+      b.onclick = () => {
+        const m = b.dataset.tts;
+        xiApi('/api/speak', { tts_mode: m }).then((d) => {
+          if (d && d.ok === false) { toast(d.error || '切换失败', true); return; }
+          toast(m === 'xiaomi' ? '播报通道：小米原生（音量跟随设备）' : '播报通道：云端合成');
+          xiState();
+        });
+      };
+    });
+
+    // 音色：只影响云端合成
+    $('xi-voice').onchange = () => {
+      const el = $('xi-voice');
+      const v = el.value;
+      xiApi('/api/speak', { edge_voice: v }).then((d) => {
+        if (d && d.ok === false) { toast(d.error || '音色保存失败', true); return; }
+        const opt = el.selectedOptions[0];
+        toast('音色：' + (opt ? opt.textContent.split(' · ')[0] : v));
+        xiState();
+      });
+    };
+
+    // 试听：按当前通道和音色念一句（原生通道要等它念完，会占几秒）
+    $('xi-voice-test').onclick = async () => {
+      const btn = $('xi-voice-test');
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '试听中';
+      try {
+        const d = await xiApi('/api/say', { text: '你好，我是小爱，现在用的是这个声音。' });
+        if (d && d.ok === false) toast(d.error || '试听失败', true);
+      } catch (e) {
+        toast('试听失败', true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = old;
+      }
+    };
+
     $('xi-qrefresh').onclick = xiQueue;
     $('xi-queue').onclick = (e) => {
       const row = e.target.closest('.row');
@@ -1073,6 +1386,11 @@
       if (!chip) return;
       xiApi('/api/play_local', { query: chip.dataset.artist, limit: 30 })
         .then(() => setTimeout(() => { xiState(); xiQueue(); }, 800));
+    };
+    if ($('xi-tag-btn')) $('xi-tag-btn').onclick = () => xiTagsBuild(false);
+    $('xi-chips-toggle').onclick = () => {
+      XI.artistsOpen = !XI.artistsOpen;
+      paintArtists();
     };
     $('xi-roots-toggle').onclick = () => {
       const box = $('xi-roots-box');
@@ -1450,6 +1768,7 @@
               <div class="facts" style="margin-bottom:0">
                 <div class="fact"><em>本地规则</em><b class="mono" id="oc-rt-local">—</b></div>
                 <div class="fact"><em>自定义指令</em><b class="mono" id="oc-rt-custom">—</b></div>
+                <div class="fact"><em>AI 模型</em><b class="mono" id="oc-rt-llm">—</b></div>
                 <div class="fact"><em>转 OpenClaw</em><b class="mono" id="oc-rt-oc">—</b></div>
                 <div class="fact"><em>本地兜底</em><b class="mono" id="oc-rt-fb">—</b></div>
               </div>
@@ -1604,6 +1923,7 @@
     const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
     set('oc-rt-local', r.local || 0);
     set('oc-rt-custom', r.custom || 0);
+    set('oc-rt-llm', r.llm || 0);
     set('oc-rt-oc', r.openclaw || 0);
     set('oc-rt-fb', r.fallback || 0);
     const note = $('oc-rt-note');
@@ -2037,6 +2357,7 @@
       };
     });
     $('btn-refresh').onclick = refreshCurrent;
+    $('btn-about').onclick = gotoAbout;
     $('btn-update').onclick = () => {
       if (updTarget(UPD.info)) updOpen();
       else updCheck(false);

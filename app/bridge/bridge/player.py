@@ -21,6 +21,7 @@ class Player:
         self.queue = []
         self.cursor = -1
         self.timer = None
+        self._hold_until = 0.0
         self.mode = (cfg.music or {}).get("mode") or "shuffle"
         self.speaking = False
         self._resume_at = None
@@ -229,12 +230,25 @@ class Player:
         await self.resume("（播报结束）")
 
     # ---------- 看门狗 ----------
+    def hold(self, seconds=120):
+        """指令处理期间先别让看门狗插手
+
+        处理一条指令要十几秒（模型要跑几轮），这期间外部打断会让看门狗
+        把上一首拉回来，正好和新播放打架——日志里「自动恢复第 N 首」就是它。
+        """
+        self._hold_until = time.time() + float(seconds)
+
+    def release(self):
+        self._hold_until = 0.0
+
     async def start_watchdog(self, interval=12, grace=20):
         """外部打断（整点报时、小爱别的应答）会导致流被冲掉，这里负责重新推流"""
         while True:
             await asyncio.sleep(interval)
             try:
                 if not self.queue or self.cursor < 0 or self._paused:
+                    continue
+                if time.time() < getattr(self, "_hold_until", 0):
                     continue
                 if time.time() - self._last_push < grace:
                     continue

@@ -317,28 +317,79 @@ def _upgrade_script():
     安装包路径与版本号一律作为位置参数传入（$1 / $2），不拼进脚本文本。
     拼在双引号里时，文件名带 $(...) 或反引号照样会被 shell 展开，
     等于让「文件名」变成一条命令；改成参数传递就没有这层解释。
+
+    每一步都等真正落地再走下一步，不再用固定 sleep：
+    2026-11-09 02:34 那次一键更新就是这样失败的——uninstall 返回 0 但应用还没
+    从列表里消失，紧接着 install-fpk 撞上「Application is installed」直接空转，
+    版本停在旧号却一路 rc=0，用户只看到「更新完还是旧版」。
     """
     return """#!/bin/sh
 set -u
 PKG="$1"
 VER="$2"
+APP=%(app)s
+DIR=%(dir)s
 LOG=%(log)s
 exec >>"$LOG" 2>&1
+
 echo "$(date '+%%F %%T') === 升级 $VER ==="
-appcenter-cli stop %(app)s
+
+appcenter-cli stop "$APP"
 echo "stop rc=$?"
-sleep 2
-appcenter-cli uninstall %(app)s
+
+# 等状态从 running 变成别的：容器退出可能要十几秒
+i=0
+while [ $i -lt 40 ]; do
+    appcenter-cli list 2>/dev/null | grep "$APP" | grep -q running || break
+    sleep 1
+    i=$((i+1))
+done
+echo "等待停止 ${i}s"
+
+appcenter-cli uninstall "$APP"
 echo "uninstall rc=$?"
-sleep 2
+
+# 等它真的从列表里消失，否则 install-fpk 会认为已安装而跳过
+i=0
+while [ $i -lt 60 ]; do
+    appcenter-cli list 2>/dev/null | grep -q "$APP" || break
+    sleep 1
+    i=$((i+1))
+done
+echo "等待卸载 ${i}s"
+
 appcenter-cli install-fpk "$PKG" -v %(vol)s
 echo "install rc=$?"
-sleep 2
-appcenter-cli start %(app)s
+
+# 确认版本真的换成了目标版本
+# 注意：manifest 不会留在应用目录里，只能从 appcenter 列表取，
+# 取不到再退回读 server/hub.py 里的 VERSION 常量。
+got=""
+i=0
+while [ $i -lt 30 ]; do
+    got=$(appcenter-cli list 2>/dev/null | grep "$APP" | awk -F'│' '{print $4}' | tr -d ' ')
+    [ -z "$got" ] && got=$(sed -n 's/^VERSION = "\\(.*\\)"$/\\1/p' "$DIR/server/hub.py" 2>/dev/null | head -1)
+    [ "$got" = "$VER" ] && break
+    sleep 1
+    i=$((i+1))
+done
+echo "装后版本=${got:-空}（目标 $VER）"
+if [ "$got" != "$VER" ]; then
+    echo "版本没换成目标值，重试一次安装"
+    appcenter-cli install-fpk "$PKG" -v %(vol)s
+    echo "install retry rc=$?"
+    sleep 2
+fi
+
+appcenter-cli start "$APP"
 echo "start rc=$?"
+sleep 3
+# start 常报 10500 但进程其实起来了，再拉一次兜底
+appcenter-cli start "$APP" >/dev/null 2>&1
 echo "$(date '+%%F %%T') === 结束 ==="
 """ % {"log": _shq(UPDATE_LOG), "app": _shq(APPNAME),
-       "vol": _shq(str(_volume_index()))}
+       "vol": _shq(str(_volume_index())),
+       "dir": _shq("/vol%d/@appcenter/%s" % (_volume_index(), APPNAME))}
 
 
 def dir_warnings():

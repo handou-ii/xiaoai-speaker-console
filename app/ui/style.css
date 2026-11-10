@@ -783,6 +783,9 @@ body {
 
 .vol { display: flex; align-items: center; gap: 12px; }
 .vol .hint { margin: 0; flex: none; }
+/* 原生 TTS 下音色和播报音量都不生效，置灰表示"当前不起作用" */
+.vol select:disabled,
+.vol input[type=range]:disabled { opacity: .4; cursor: not-allowed; }
 .vol-num {
   font: 11px/1 var(--mono);
   color: var(--text-2);
@@ -1079,3 +1082,11 @@ input[type=range]::-moz-range-thumb {
 }
 .dlg-status { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-3); }
 .dlg-status.bad { color: var(--bad); }
+
+/* 顶栏「关于」跳转后，目标卡片短暂高亮一下 */
+.panel.flash { animation: panel-flash 1.8s ease-out; }
+@keyframes panel-flash {
+  0%   { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+  18%  { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.45); }
+  100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+}

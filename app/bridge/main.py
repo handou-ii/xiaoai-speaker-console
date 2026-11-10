@@ -23,6 +23,8 @@ from bridge.auth import Auth
 from bridge.config import Config
 from bridge.history import History
 from bridge.listener import ConversationListener
+from bridge.llm import Llm
+from bridge.tagging import Tagger
 from bridge.mi_login import MiLogin
 from bridge.music import MusicLibrary
 from bridge.player import Player
@@ -70,7 +72,9 @@ class Bridge:
         self.auth = None
         self.speaker = None
         self.agent = None
+        self.llm = None
         self.library = None
+        self.tagger = None
         self.player = None
         self.listener = None
         self.router = None
@@ -83,7 +87,9 @@ class Bridge:
         self.auth = await Auth(self.cfg).start()
         self.speaker = Speaker(self.auth, self.cfg)
         self.agent = Agent(self.auth, self.cfg)
+        self.llm = Llm(self.cfg)
         self.library = MusicLibrary(self.cfg)
+        self.tagger = Tagger(self.cfg, self.library, self.llm)
         self.player = Player(self.speaker, self.library, self.cfg)
         self.router = Router(self)
         self.mi_login = MiLogin(self.cfg)
@@ -143,7 +149,10 @@ class Bridge:
                 return
             intent = strip_device_wake(normalize(text)) or normalize(text)
             log.info("没叫唤醒词，但命中自定义指令「%s」：%s", bare_plan.note, text)
-        intent = intent or text
+        # 命中唤醒词但后面没内容（「播放本地歌曲」）= 空意图，交给路由按"随便放点"处理；
+        # 只有没命中唤醒词（走自定义指令兜底）时才拿整句当意图。
+        if not intent and not hit:
+            intent = text
 
         if self._busy:
             log.warning("上一条还在处理，跳过")
@@ -151,6 +160,8 @@ class Bridge:
                                  ok=False, stage="busy")
             return
         self._busy = True
+        # 处理期间挂起看门狗：它会把上一首拉回来，和新播放打架
+        self.player.hold(150)
         try:
             # 掐断小爱自己的回答。它的对话记录是在回答生成完之后才写的，
             # 我们拿到 query 时它往往已经开口，所以这一条必须排在所有 await
@@ -210,6 +221,7 @@ class Bridge:
             self.history.command(text, intent, ok=False, stage="error",
                                  reply=f"异常：{e}")
         finally:
+            self.player.release()
             self._busy = False
 
     async def _run_plan(self, plan):

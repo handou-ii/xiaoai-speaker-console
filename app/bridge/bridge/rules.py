@@ -187,6 +187,27 @@ class WakeMatcher:
                 self.last_scope = scope
                 return True, intent
 
+        # 只说唤醒词、后面没有实际内容（「播放本地歌曲」「播放本地」「本地歌曲」
+        # 这种）：用户的意思就是「随便放点」，不该当成没听见。
+        # 判定放在这里而不是上层，因为「播放本地歌曲」里的"歌曲"属于唤醒词本身
+        # 的一部分（名字里就带），不能被当成指令正文。
+        _NOISE_TAIL = re.compile(r"^(歌曲|音乐|首歌|歌|的歌|的|吧|呗|啊|呀|呢|个|首|点|些)+$")
+        for name, scope, p in self._pats:
+            if not name:
+                continue
+            if head == normalize(name):
+                self.last_name = name
+                self.last_scope = scope
+                return True, ""
+            m = p.match(head)
+            if not m:
+                continue
+            rest = _strip_fillers(head[m.end():].strip())
+            if not rest or _NOISE_TAIL.match(rest):
+                self.last_name = name
+                self.last_scope = scope
+                return True, ""
+
         # 拼音兜底：把前 12 个字符转拼音，找同音写法
         if self._pinyin and self._py_keys:
             char_py = self._pinyin(head[:12])   # lazy_pinyin 与汉字一一对应
