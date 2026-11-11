@@ -70,6 +70,17 @@ bridge_running() {
     "${DOCKER}" inspect -f '{{.State.Running}}' "${BRIDGE_NAME}" 2>/dev/null | grep -q true
 }
 
+# 容器在跑，但绑的还是升级前那个镜像 ID → 需要重建。
+# 为什么必须查：升级时 docker load 只把 tag 指到新镜像，已在跑的容器仍然
+# 绑着旧镜像 ID，会一直用旧代码（表现为升级后桥接崩溃/功能对不上）。
+bridge_stale() {
+    bridge_running || return 1
+    local want got
+    want="$("${DOCKER}" image inspect -f '{{.Id}}' "${BRIDGE_IMG}" 2>/dev/null | head -n 1)"
+    got="$("${DOCKER}" inspect -f '{{.Image}}' "${BRIDGE_NAME}" 2>/dev/null | head -n 1)"
+    [ -n "${want}" ] && [ -n "${got}" ] && [ "${want}" != "${got}" ]
+}
+
 # 可挂载目录清单，一行一个（只读）：
 #   1. 各卷下数字命名的一级目录，也就是用户主目录（/vol1/1000 这种）
 #   2. 曲库里配置、但不在上面范围内的目录（比如放在 /vol1/测试 这种共享目录里）
@@ -156,7 +167,11 @@ bridge_up() {
     fi
 
     if bridge_running; then
-        return 0
+        if ! bridge_stale; then
+            return 0
+        fi
+        log_msg "镜像已更新，重建桥接容器（旧镜像 ${BRIDGE_IMG} 已被替换）"
+        "${DOCKER}" rm -f "${BRIDGE_NAME}" >> "${LOG_FILE}" 2>&1
     fi
 
     # 容器存在但没跑（或挂载路径已过期）→ 重建，保证卷指向当前应用目录

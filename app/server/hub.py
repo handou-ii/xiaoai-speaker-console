@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import os
+import platform
 import posixpath
 import secrets
 import socket
@@ -139,6 +140,22 @@ def scan_local():
     return out
 
 
+def host_arch():
+    """本机架构：arm64 / amd64。hub 跑在 NAS 宿主机上，取到的就是 NAS 的架构"""
+    m = (platform.machine() or "").lower()
+    if m in ("aarch64", "arm64", "armv8l", "armv7l", "arm"):
+        return "arm64"
+    return "amd64"
+
+
+def asset_arch(name):
+    """从 release 附件名判断架构；没有架构后缀的按 amd64（历史包都是 x86）"""
+    n = (name or "").lower()
+    if "arm64" in n or "aarch64" in n:
+        return "arm64"
+    return "amd64"
+
+
 def gh_latest(timeout=8):
     """查远端最新版本；私有仓库未授权时返回 404，按不可用处理"""
     url = "https://api.github.com/repos/%s/releases/latest" % UPDATE_REPO
@@ -156,9 +173,13 @@ def gh_latest(timeout=8):
     except Exception as e:
         return {"ok": False, "error": "%s" % type(e).__name__}
     tag = (d.get("tag_name") or "").lstrip("v")
-    assets = [a for a in (d.get("assets") or [])
-              if str(a.get("name") or "").lower().endswith(".fpk")]
-    a0 = assets[0] if assets else {}
+    fpk = [a for a in (d.get("assets") or [])
+           if str(a.get("name") or "").lower().endswith(".fpk")]
+    # 必须按本机架构挑包：同一次 release 里 x86 与 arm64 并列，
+    # 盲取第一个会让人下到别的架构的包，装上去容器起不来。
+    want = host_arch()
+    mine = [a for a in fpk if asset_arch(a.get("name")) == want]
+    a0 = mine[0] if mine else {}
     return {"ok": True, "latest": tag, "name": d.get("name") or "",
             "url": a0.get("browser_download_url") or "", "size": a0.get("size") or 0,
             # API 资源地址：browser_download_url 走 github.com 直链，
@@ -166,6 +187,10 @@ def gh_latest(timeout=8):
             # 万一前者不通就用它兜底。
             "api_url": a0.get("url") or "",
             "asset": a0.get("name") or "",
+            "arch": want,
+            "assets": [{"name": a.get("name") or "",
+                        "arch": asset_arch(a.get("name"))} for a in fpk],
+            "arch_missing": bool(fpk) and not mine,
             "notes": (d.get("body") or "")[:400],
             "has_update": bool(tag) and ver_key(tag) > ver_key(VERSION)}
 
@@ -464,6 +489,8 @@ def update_apply(obj):
             if not gh.get("has_update"):
                 return {"ok": False, "error": "远端没有比 v%s 更新的版本" % VERSION}
             if not (gh.get("url") or gh.get("api_url")):
+                if gh.get("arch_missing"):
+                    return {"ok": False, "error": "远端发布里没有 %s 架构的安装包" % gh.get("arch")}
                 return {"ok": False, "error": "远端发布没有 fpk 附件"}
             _DL.clear()
             _DL.update({"running": True, "target": gh.get("latest") or "",
