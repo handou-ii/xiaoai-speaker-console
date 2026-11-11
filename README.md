@@ -141,8 +141,6 @@ curl -fL -o xiaoai-speaker-console-1.5.6.fpk \
 ## 支持这个项目
 
 开源免费、无广告、没有付费版，全部功能都不打赏也能用。如果它确实让你方便了一点，
-欢迎随意金额打赏：见 [DONATE.md](DONATE.md)。控制台「概览」页底部也会显示收款码，
-把图片放到 `/vol1/@appdata/xiaoai-console/bridge/conf/donate.png` 即可。
 
 ## 许可
 
