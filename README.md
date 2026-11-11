@@ -100,8 +100,6 @@ curl -fL -o xiaoai-speaker-console-1.5.6.fpk \
 
 装到 1.5.6 之后，后续版本就能一直在控制台里点按钮完成，不再需要这条命令。
 
-**监视目录要选在只有管理员能写的位置。** 一键更新的最后一步是 `appcenter-cli install-fpk`，它会以 root 执行包内 `cmd/` 下的脚本；控制台只校验「文件在受监视目录内 / 外层 manifest 的 appname 一致 / 版本号更高」，这三条只防装错包，不防恶意包。所以真正的边界是目录权限：把 `update.dirs` 指向共享盘或多人都能写的位置，等于把 root 执行权限交给所有能写那个目录的人。控制台检测到监视目录对同组或其他用户可写时，会在更新弹窗里给出提示。
-
 ## 安全与隐私
 
 **两个端口都不要映射到公网。** 8900（控制台）与 8790（桥接）能直接控制音箱播放、读曲库路径、读写 OpenClaw 配置，只适合放在局域网。
@@ -130,7 +128,7 @@ curl -fL -o xiaoai-speaker-console-1.5.6.fpk \
 - 应用目录：`/vol1/@appcenter/xiaoai-console`
 - 运行数据：`/vol1/@appdata/xiaoai-console/bridge`（登录态 `conf/.mi.token`、根凭据 `conf/auth.json`、配置 `conf/config.json`）
 - 配置目录：`/vol1/@appconf/xiaoai-console`（`update.dirs`、访问口令 `access.json`）
-- 上面两类目录里的凭据是**明文**的，只留在本机，不随安装包分发；卸载应用不会删除它们，要彻底清干净需手工删这两个目录。
+- 上面两类目录里的凭据是**明文**的，只留在本机；卸载应用不会删除它们，要彻底清干净需手工删这两个目录。
 
 ## 免责
 
