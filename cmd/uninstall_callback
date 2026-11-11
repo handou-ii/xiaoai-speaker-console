@@ -2,8 +2,9 @@
 # 卸载后：停掉并删除桥接容器；镜像与数据保留
 #
 # 保留理由：
-#   - 镜像 174MB，留着重装免去 30~60s 的 docker load
 #   - ${TRIM_PKGVAR}/bridge 里是小米登录 token、曲库索引、TTS 缓存，删了要重新扫码
+#   镜像也留着（174MB），但安装/升级回调每次都会无条件重新导入，
+#   不会因为「同 tag 已存在」而沿用旧镜像。
 # 想彻底清掉见 README 的「完全清理」。
 
 if command -v docker >/dev/null 2>&1; then

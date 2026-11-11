@@ -5,4 +5,19 @@ mkdir -p "${TRIM_PKGVAR}" "${TRIM_PKGETC}" 2>/dev/null
 chmod +x "${TRIM_APPDEST}/server/hub.py" 2>/dev/null
 chown -R "${TRIM_USERNAME}:${TRIM_GROUPNAME}" "${TRIM_PKGETC}" "${TRIM_PKGVAR}" 2>/dev/null
 
+# ---- 导入桥接镜像 ----
+# main.py 只在镜像里，bridge/ 是挂载进容器的。升级若沿用旧镜像，新旧代码错位，
+# 启动直接 AttributeError（例如 'Bridge' object has no attribute 'llm'）。
+# 所以这里也和无条件安装一样，每次都导一遍。
+IMG="${TRIM_APPDEST}/bridge/img.tar.gz"
+if command -v docker >/dev/null 2>&1; then
+    if [ -f "${IMG}" ]; then
+        echo "正在导入桥接镜像（约 174MB）..." >> "${TRIM_TEMP_LOGFILE:-/dev/null}"
+        docker load -i "${IMG}" >> "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 \
+            || echo "镜像导入失败：${IMG}" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"
+    else
+        echo "镜像文件缺失：${IMG}" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"
+    fi
+fi
+
 exit 0

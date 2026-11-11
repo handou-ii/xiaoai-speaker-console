@@ -28,17 +28,20 @@ if [ -n "${TRIM_USERNAME:-}" ] && [ "${TRIM_USERNAME}" != "root" ]; then
     chown -R "${TRIM_USERNAME}:${TRIM_GROUPNAME:-${TRIM_USERNAME}}" "${DATA}" "${TRIM_PKGETC}" 2>/dev/null
 fi
 
-# ---- 2. 导入桥接镜像（已有同 tag 镜像则跳过，重装更快）----
+# ---- 2. 导入桥接镜像 ----
+# 必须无条件导入：容器只把 ${APPDEST}/bridge/bridge 挂成 /app/bridge，main.py 只存在于镜像里。
+# 从前这里判断「已有同 tag 镜像就跳过」，而卸载又特意保留镜像，于是覆盖安装会一直跑旧镜像：
+# 旧 main.py 里没有新版本加的属性（如 self.llm），启动即
+# AttributeError: 'Bridge' object has no attribute 'llm'（1.5.7 的 tagger 同源）。
+# 相同镜像再导一次会复用已有层，只多几秒。
 if command -v docker >/dev/null 2>&1; then
-    if ! docker image inspect xiaoai-bridge:latest >/dev/null 2>&1; then
-        if [ -f "${IMG}" ]; then
-            log "正在导入桥接镜像（约 174MB）..."
-            if ! docker load -i "${IMG}" >> "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1; then
-                log "镜像导入失败：${IMG}"
-            fi
-        else
-            log "镜像文件缺失：${IMG}"
+    if [ -f "${IMG}" ]; then
+        log "正在导入桥接镜像（约 174MB）..."
+        if ! docker load -i "${IMG}" >> "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1; then
+            log "镜像导入失败：${IMG}"
         fi
+    else
+        log "镜像文件缺失：${IMG}"
     fi
 else
     log "未检测到 docker，跳过镜像导入"
