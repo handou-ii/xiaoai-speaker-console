@@ -116,7 +116,14 @@ _TAG_KEYS = {
 
 def _tag_text(tags, keys):
     for k in keys:
-        if k in tags:
+        # FLAC/Vorbis 的标签是 VCFLACDict，`k in tags` 对非 ASCII 键
+        # （©nam / ©alb 这类 MP4 键）会直接抛 ValueError。老代码没兜住，
+        # 一个字段缺少就整个文件的标签全丢，artist/album 都退回文件名。
+        try:
+            hit = k in tags
+        except Exception:
+            continue
+        if hit:
             v = tags[k]
             if isinstance(v, list):
                 v = v[0] if v else ""
@@ -158,14 +165,15 @@ def normalize_genre(raw):
 
 
 class Track:
-    __slots__ = ("path", "name", "artist", "album", "genre", "tid")
+    __slots__ = ("path", "name", "artist", "album", "genre", "tid", "mtime")
 
-    def __init__(self, path, name, artist, album, genre=""):
+    def __init__(self, path, name, artist, album, genre="", mtime=0.0):
         self.path = path
         self.name = name
         self.artist = artist
         self.album = album
         self.genre = genre
+        self.mtime = float(mtime or 0)
         self.tid = hashlib.md5(path.encode("utf-8")).hexdigest()[:12]
 
     def as_dict(self):
@@ -210,10 +218,16 @@ class MusicLibrary:
         self.tracks = []
         self.by_id = {}
         self.loaded_at = 0
+        self._reused = 0
 
     # ---------- 扫描 ----------
-    def _collect(self, root, seen):
-        """扫一个根目录，返回 Track 列表；seen 用于跨目录去重"""
+    def _collect(self, root, seen, old=None):
+        """扫一个根目录，返回 Track 列表；seen 用于跨目录去重
+
+        old 是「上次索引」的 path → Track 映射。路径相同且 mtime 没变的
+        直接复用旧记录、不再读标签 —— 1900 多首里通常只有几首是新的，
+        这样重建索引是秒级，而不是每次两分钟。
+        """
         found = []
         if not os.path.isdir(root):
             log.warning("音乐根目录不存在：%s", root)
@@ -222,11 +236,29 @@ class MusicLibrary:
             dirnames[:] = [d for d in dirnames if not d.startswith(("@", "."))]
             rel = os.path.relpath(dirpath, root)
             parts = [] if rel == "." else rel.split(os.sep)
-            album = clean_album(parts[-1]) if parts else ""
+            # 目录推导出来的专辑只做兜底。注意别在循环里复用同名变量：
+            # 否则上一首的 album 会被没标签的文件继承，整目录串成一个专辑。
+            folder_album = clean_album(parts[-1]) if parts else ""
             folder_artist = clean_text(parts[0]) if len(parts) >= 2 else ""
             for fn in filenames:
                 if not fn.lower().endswith(self.exts):
                     continue
+                full = os.path.join(dirpath, fn)
+                try:
+                    mt = os.path.getmtime(full)
+                except OSError:
+                    mt = 0.0
+                if old:
+                    prev = old.get(full)
+                    if prev is not None and prev.mtime \
+                            and abs(prev.mtime - mt) < 1e-6:
+                        key = (prev.artist.lower(), prev.name.lower())
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        found.append(prev)
+                        self._reused += 1
+                        continue
                 stem = os.path.splitext(fn)[0]
                 track_name = TRACKNUM.sub("", stem)
                 # 文件名里的「A - B」到底谁是谁：
@@ -261,15 +293,15 @@ class MusicLibrary:
                 else:
                     track_name = strip_artist_prefix(
                         TRACKNUM.sub("", track_name).strip() or stem, artist)
-                album = clean_album(tags.get("album", "")) or album
+                album = clean_album(tags.get("album", "")) or folder_album
                 genre = normalize_genre(tags.get("genre", ""))
                 # 同一首歌在多个目录有副本，按「歌手+歌名」去重
                 key = (artist.lower(), track_name.lower())
                 if key in seen:
                     continue
                 seen.add(key)
-                found.append(Track(os.path.join(dirpath, fn), track_name,
-                                   artist, album, genre))
+                found.append(Track(full, track_name,
+                                   artist, album, genre, mt))
         return found
 
     def scan(self, force=False):
@@ -288,14 +320,19 @@ class MusicLibrary:
             return len(self.tracks)
 
         t0 = time.time()
+        self._reused = 0
         found = []
         seen = set()
+        # 旧索引按路径索引起来，没改过的文件直接复用（不读标签）
+        old = {t.path: t for t in self.tracks} if self.tracks else {}
         for root in self.roots:
-            found.extend(self._collect(root, seen))
+            found.extend(self._collect(root, seen, old))
         self.tracks = found
         self.by_id = {t.tid: t for t in found}
         self.loaded_at = int(t0)
-        log.info("音乐库索引完成：%d 首，用时 %.1fs", len(found), time.time() - t0)
+        log.info("音乐库索引完成：%d 首（复用 %d，新读 %d），用时 %.1fs",
+                 len(found), self._reused, len(found) - self._reused,
+                 time.time() - t0)
         self._save_cache()
         return len(found)
 
@@ -364,7 +401,7 @@ class MusicLibrary:
             if set(data.get("roots") or []) != set(self.roots):
                 return False
             self.tracks = [Track(d["path"], d["name"], d["artist"], d["album"],
-                                 d.get("genre", ""))
+                                 d.get("genre", ""), d.get("mtime", 0))
                            for d in data.get("tracks", [])]
             self.by_id = {t.tid: t for t in self.tracks}
             log.info("音乐库从缓存加载：%d 首", len(self.tracks))
@@ -380,7 +417,8 @@ class MusicLibrary:
                            "roots": self.roots,
                            "tracks": [{"path": t.path, "name": t.name,
                                        "artist": t.artist, "album": t.album,
-                                       "genre": t.genre}
+                                       "genre": t.genre,
+                                       "mtime": round(t.mtime, 3)}
                                       for t in self.tracks]},
                           f, ensure_ascii=False)
         except Exception as e:
@@ -453,6 +491,10 @@ class MusicLibrary:
             if len(words) > 1:
                 scored = [(0, t) for t in self.tracks
                           if all(w in f"{t.artist} {t.name}".lower() for w in words)]
+        # 只要有人命中「歌手或歌名」，就别把仅靠专辑名撞上的也放进来。
+        # 专辑标签一旦有偏差，搜「伍佰」会带出一堆别人的歌。
+        if scored and scored[0][0] > 0:
+            scored = [x for x in scored if x[0] > 0]
         if limit and limit > 0:
             scored = scored[:limit]
         return [t for _, t in scored]

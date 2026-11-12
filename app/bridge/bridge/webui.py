@@ -1130,6 +1130,26 @@ def attach(app, bridge, web_dir):
         return web.json_response({"ok": True,
                                   "items": history.list(limit=limit)})
 
+    async def api_memory(request):
+        """记忆面板：看它到底记住了什么、会喂给模型什么"""
+        m = getattr(bridge, "memory", None)
+        if not m:
+            return web.json_response({"ok": False, "error": "记忆未启用"})
+        try:
+            recent = [{"name": n, "artist": a, "action": act}
+                      for n, a, act in m.recent_plays(12)]
+            turns = [{"query": q, "reply": r} for q, r in m.recent_turns(5)]
+            liked = [{"artist": k, "score": round(v, 1)}
+                     for k, v, _ in m._decayed("artist", 1, 8)]
+            disliked = [{"artist": k, "score": round(v, 1), "hits": h}
+                        for k, v, h in m._decayed("artist", -1, 5)]
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)[:120]})
+        return web.json_response({"ok": True, "stats": m.stats(),
+                                  "context": m.context(), "recent": recent,
+                                  "turns": turns, "liked": liked,
+                                  "disliked": disliked})
+
     async def api_config(_request):
         """只暴露安全的展示字段，token/密码一律不出网关"""
         c = json.loads(json.dumps(cfg.raw))
@@ -1303,6 +1323,7 @@ def attach(app, bridge, web_dir):
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/queue", api_queue)
     app.router.add_get("/api/history", api_history)
+    app.router.add_get("/api/memory", api_memory)
     app.router.add_get("/api/artists", api_artists)
     app.router.add_get("/api/config", api_config)
     app.router.add_get("/", index)

@@ -24,6 +24,7 @@ from bridge.config import Config
 from bridge.history import History
 from bridge.listener import ConversationListener
 from bridge.llm import Llm
+from bridge.memory import Memory
 from bridge.tagging import Tagger
 from bridge.mi_login import MiLogin
 from bridge.music import MusicLibrary
@@ -79,6 +80,7 @@ class Bridge:
         self.listener = None
         self.router = None
         self.mi_login = None
+        self.memory = None
         self.history = History()
         self.matcher = WakeMatcher(cfg)
         self._busy = False
@@ -87,10 +89,19 @@ class Bridge:
         self.auth = await Auth(self.cfg).start()
         self.speaker = Speaker(self.auth, self.cfg)
         self.agent = Agent(self.auth, self.cfg)
+        # 播报前把长回答压成一句口播。agent 侧 system 有 4.7 万字符、会话堆了
+        # 300 多条历史，「不超过60字」那句会被长回复的历史示范盖过（2026-11-11
+        # 实测同样一句约束，直连模型 3.7 秒回 64 字，走 agent 回 167 字）。
+        # 在播报口兜一道，不依赖 agent 听不听话。
+        self.speaker.shrinker = self.agent.shrink
         self.llm = Llm(self.cfg)
         self.library = MusicLibrary(self.cfg)
         self.tagger = Tagger(self.cfg, self.library, self.llm)
         self.player = Player(self.speaker, self.library, self.cfg)
+        # 播放历史与偏好：数据落 conf/memory.db（@appdata，升级不丢）。
+        # 初始化失败也只是没有记忆，不影响放歌。
+        self.memory = Memory(self.cfg)
+        self.player.memory = self.memory
         self.router = Router(self)
         self.mi_login = MiLogin(self.cfg)
         self.listener = ConversationListener(self.auth, self.cfg)
@@ -101,6 +112,36 @@ class Bridge:
         if force:
             log.info("曲库已重建：%d 首", n)
         return n
+
+    async def _library_watch(self):
+        """曲库目录巡检：发现新文件就重建索引
+
+        为什么需要它：`scan()` 的实现是「内存里已有曲目就直接返回」，
+        只有 force=True 才真的重扫。也就是说服务跑着的时候，往音乐目录
+        里新放歌永远不会自己出现，只能手动点「重建曲库索引」或重启。
+        这里按固定间隔比一次目录指纹（文件数 + 最近修改时间），变了才扫，
+        没变几乎不花时间。
+        """
+        m = self.cfg.music or {}
+        interval = float(m.get("watch_interval") or 300)
+        if interval <= 0:
+            return
+        last = None
+        while True:
+            try:
+                snap = await asyncio.to_thread(self.library.snapshot)
+                if last is not None and snap != last:
+                    log.info("曲库目录有变化（%s → %s），重建索引", last, snap)
+                    n = await asyncio.to_thread(self.library.scan, True)
+                    log.info("曲库已重建：%d 首", n)
+                    snap = await asyncio.to_thread(self.library.snapshot)
+                last = snap
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                log.warning("曲库巡检失败：%s", e)
+                await asyncio.sleep(interval)
 
     async def show_devices(self):
         devices = await self.auth.device_list() or []
@@ -165,9 +206,12 @@ class Bridge:
         try:
             # 掐断小爱自己的回答。它的对话记录是在回答生成完之后才写的，
             # 我们拿到 query 时它往往已经开口，所以这一条必须排在所有 await
-            # 之前（原先是算完 plan 才发，白等几十到几百毫秒），并且连发三次
-            # 覆盖「单次 stop 落在它开播之前」的落空情况。
-            stop_task = asyncio.create_task(self.speaker.stop_burst())
+            # 之前（原先是算完 plan 才发，白等几十到几百毫秒）。
+            #
+            # 只连发三发不够：LLM 这轮要跑十几秒，三发全落在前 1 秒内，它若
+            # 晚开口（云端 NLP 慢时很常见）就整句念完、没人再拦。改成持续
+            # 压制，一直发到自己开始播报为止。
+            self.speaker.start_hold()
             plan = bare_plan or await self.router.plan(
                 intent, wake_hit=hit,
                 wake_scope=getattr(self.matcher, "last_scope", None),
@@ -184,10 +228,6 @@ class Bridge:
                                         plan=plan.reply)
 
             confirm = self.cfg.speak.get("confirm_audio")
-            if confirm:
-                asyncio.create_task(
-                    self.speaker.play_url(self.speaker.media_url(confirm), interrupt=False)
-                )
             t1 = time.perf_counter()
 
             if plan.handled:
@@ -196,11 +236,15 @@ class Bridge:
                 # 等 agent 回答期间先把音乐挂起：否则看门狗看到"没在播"，
                 # 会在等待的十几秒里把同一首歌反复重推
                 await self.player.pause_for_speech()
-                try:
-                    t_ask = time.time()
-                    reply = await self.agent.chat(intent)
-                finally:
-                    await stop_task
+                # 要等十几秒的这条路径才应声：本地指令一秒内就有回复，
+                # 再垫一句「好的，稍等」反而拖沓。应答音播完会自动把压制
+                # 接回来（见 speaker.confirm_then_hold）。
+                if confirm:
+                    asyncio.create_task(self.speaker.confirm_then_hold(confirm))
+                # 压制不在这里收手：这十几秒正是小爱可能开口的窗口，
+                # 由 _speak / play_url 在推流前一手收掉（见 speaker.release_hold）
+                t_ask = time.time()
+                reply = await self.agent.chat(intent)
                 agent_ms = int((time.perf_counter() - t1) * 1000)
                 # agent 自己会用 speaker_say 播报（prompt 里要求它这么做）。
                 # 这一轮它已经说过话，就别再把返回的文本念一遍。
@@ -215,12 +259,19 @@ class Bridge:
                         ms=int((t3 - t0) * 1000),
                         agent_ms=agent_ms,
                         say_ms=int((t3 - t1) * 1000) - agent_ms)
+            # 记一句上下文：下一轮「他 / 那首 / 再换一首」靠它解析
+            if self.memory:
+                self.memory.record_turn(text, intent, reply,
+                                        action=getattr(plan, "note", "") or "")
             log.info("耗时 总计 %.0fms（%s）", (t3 - t0) * 1000, plan.source)
         except Exception as e:
             log.exception("处理指令失败")
             self.history.command(text, intent, ok=False, stage="error",
                                  reply=f"异常：{e}")
         finally:
+            # 兜底收手：正常路径在 play_url 前已收，这里只处理没播报/抛异常的轮次，
+            # 免得压制任务在后台空转到上限
+            await self.speaker.release_hold()
             self.player.release()
             self._busy = False
 
@@ -260,6 +311,8 @@ class Bridge:
         ))
         # 音乐库索引（后台建，避免阻塞启动）
         asyncio.create_task(self.scan_library())
+        # 曲库目录巡检：新歌放进去要能被发现（scan 本身不会自己重扫，见注释）
+        asyncio.create_task(self._library_watch())
 
         app = web.Application()
         web_dir = str(BASE_DIR / "web")

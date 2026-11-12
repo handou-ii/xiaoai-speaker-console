@@ -115,10 +115,29 @@ class Speaker:
         self.tts_mode = cfg.speak.get("tts_mode", "edge")
         self.voice = cfg.speak.get("edge_voice", DEFAULT_VOICE)
         self.max_seg = int(cfg.speak.get("max_seg_chars", 60))
-        self.max_total = int(cfg.speak.get("max_say_chars", 80))
+        # 播报总字数上限，0 = 不限制。OpenClaw 侧已有「超过 100 字自己总结」的规则，
+        # 这里再按字数砍会把整段丢掉：2026-11-11 实测一条三段共 167 字的回复，
+        # 被截成 65 字播出，末段「要我现在切模型吗」的问句整个消失。
+        try:
+            self.max_total = int(cfg.speak.get("max_say_chars") or 0)
+        except (TypeError, ValueError):
+            self.max_total = 0
         # 单段合成超时。edge-tts 偶尔会卡住几十秒才报 "No audio was received"，
         # 这段时间音箱会把上一段播报循环重放（实测 42 秒），必须自己卡死上限。
         self.tts_timeout = float(cfg.speak.get("tts_timeout") or 12)
+        # 播报前把长回答压成一句口播。shrinker 由 main 注入（agent.shrink），
+        # 这样 speaker 不认识 agent，也不会和它循环引用。
+        # 为什么需要：agent 侧 system 有 4.7 万字符、会话堆了 300 多条历史，
+        # 「不超过60字」那句被淹没，实测照样回 167 字（2026-11-11）。
+        self.shrinker = None
+        try:
+            self.shrink_over = int(cfg.speak.get("shrink_over", 80))
+        except (TypeError, ValueError):
+            self.shrink_over = 80
+        try:
+            self.shrink_chars = int(cfg.speak.get("shrink_chars", 60))
+        except (TypeError, ValueError):
+            self.shrink_chars = 60
         # 打断点与播报时长估算（毫秒），可在 config.timing 里按机型微调
         self.timing = (cfg.get("timing") or {})
         self.static_dir = cfg.abspath(cfg.speak.get("static_dir") or "./media")
@@ -136,6 +155,8 @@ class Speaker:
         self._state_at = 0.0
         self.last_spoke_at = 0.0      # 最近一次真正播报的时间（防止重复念）
         self._audio_gen = 0           # 每次推新音频 +1，用来让连发 stop 及时收手
+        self._hold_task = None        # 持续压制小爱原生回答的任务
+        self._hold_stop = False       # 置真后压制循环立刻收手
         self.silence_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                         "silence6.mp3")
         self._silence = None
@@ -203,6 +224,99 @@ class Speaker:
 
         # 并发发，不串行：单次往返 0.6~0.9 秒，串行会把第三次推到 2 秒后
         await asyncio.gather(*(once(d, a) for d, a in plan))
+
+    # ---------- 持续压制（按住小爱，直到轮到我们开口） ----------
+    def start_hold(self):
+        """拿到指令就按住小爱，别让它把原生回答念出来
+
+        小米只开放事后的对话记录接口，拿不到「云端识别出唤醒词」那一刻；
+        而这条记录是云端把回答生成完之后先写入、再下发设备播报的，所以我们
+        读到时它通常还没出声或刚出声。
+
+        原来只连发三发（0/400/1000ms）就撒手，之后 LLM 要跑十几秒，这中间
+        它若晚开口就整句念完、没人拦 —— 用户听到「小爱先说完整一句才被掐」
+        多半是这种，而不是三发没生效。
+
+        这里改成持续按：每 hold_interval_ms 发一次 pause，一直发到自己开始
+        推音频（_audio_gen 变化）或到 hold_max_ms 上限。
+        """
+        if self._hold_task and not self._hold_task.done():
+            return self._hold_task
+        self._hold_stop = False
+        self._hold_task = asyncio.create_task(self._hold_loop())
+        return self._hold_task
+
+    async def release_hold(self, timeout=2.0):
+        """停止压制，并等在飞的 pause 落地
+
+        必须等：晚到的 pause 会把我们刚推上去的播报停掉，等于自己掐自己。
+        """
+        task, self._hold_stop = self._hold_task, True
+        if not task or task.done():
+            self._hold_task = None
+            return
+        try:
+            await asyncio.wait_for(task, timeout=timeout)
+        except asyncio.TimeoutError:
+            log.warning("压制没在 %.1fs 内收手，强制取消", timeout)
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+        except BaseException:
+            pass
+        self._hold_task = None
+
+    async def _hold_loop(self):
+        """密前疏后：小爱几乎都在前几秒开口，过了这段它已经念完了
+
+        OpenClaw 一轮实测 30~40 秒，全程 0.4 秒一次的密度要发上百次请求，
+        没必要，也会被小米限流。所以前 hold_dense_ms（默认 5 秒）用
+        hold_interval_ms（0.4 秒）密集按，之后放宽到 hold_sparse_ms（1.5 秒）
+        继续兜住晚开口的情况，总上限 hold_max_ms（默认 45 秒）覆盖最长一轮。
+        """
+        dense = self._ms("hold_interval_ms", 400)
+        sparse = self._ms("hold_sparse_ms", 1500)
+        dense_sec = self._ms("hold_dense_ms", 5000)
+        max_sec = self._ms("hold_max_ms", 45000)
+        gen = self._audio_gen
+        t0 = time.time()
+        pending, sent = set(), 0
+        log.info("开始压制小爱原生回答（%.1fs 内每 %.2fs，其后每 %.2fs，上限 %.0fs）",
+                 dense_sec, dense, sparse, max_sec)
+
+        async def fire():
+            nonlocal sent
+            try:
+                # 单次给 1 秒上限：卡住的请求会拖慢收手，而收手慢就会掐到自己的播报
+                await asyncio.wait_for(
+                    self.auth.mina.player_pause(self.device_id), timeout=1.0)
+                sent += 1
+            except Exception as e:
+                log.debug("压制 pause 失败：%s", e)
+
+        try:
+            while not (self._hold_stop or self._audio_gen != gen):
+                elapsed = time.time() - t0
+                if elapsed >= max_sec:
+                    log.info("压制到上限 %.0fs 退出（还没轮到我们播报）", max_sec)
+                    break
+                interval = dense if elapsed < dense_sec else sparse
+                task = asyncio.create_task(fire())
+                pending.add(task)
+                task.add_done_callback(pending.discard)
+                # 细粒度等待：外部要求收手时最多 50ms 就能反应，不用等满一个间隔
+                waited = 0.0
+                while (waited < interval and not self._hold_stop
+                       and self._audio_gen == gen):
+                    await asyncio.sleep(0.05)
+                    waited += 0.05
+        finally:
+            # 等在飞的请求落地，否则它们会停掉我们随后推出的播报
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            log.info("压制结束：%.1fs 内落地 %d 次 pause", time.time() - t0, sent)
 
     async def _play_action(self, action):
         try:
@@ -328,6 +442,22 @@ class Speaker:
         text = (text or "").strip()
         if not text:
             return
+        # 长回答先压成一句口播。放在 release_hold 之前：
+        # 压缩这几秒压制还在跑，小爱仍被按住，顺便补上原先的收手空窗。
+        if self.shrinker is not None and self.shrink_over > 0 \
+                and len(text) > self.shrink_over:
+            raw_len = len(text)
+            try:
+                brief = await self.shrinker(text, self.shrink_chars)
+            except Exception as e:
+                log.warning("口播压缩失败，按原文播：%s", e)
+                brief = ""
+            if brief and len(brief) < raw_len:
+                log.info("口播压缩 %d 字 → %d 字", raw_len, len(brief))
+                text = brief
+        # 先收手：压制还在跑的话，这一句刚出口就会被自己发的 pause 掐掉。
+        # 原生 TTS 不走 play_url，所以这一步必须放在这里，不能只放 play_url。
+        await self.release_hold()
         # 现读配置：换 TTS 通道不用重启容器，方便两个通道来回对比
         mode = str(self.cfg.speak.get("tts_mode") or "edge")
         if mode == "xiaomi":
@@ -347,7 +477,8 @@ class Speaker:
         # 语音场景只需要"两段"：首段短，快速出声；其余合并成一大段，减少 stop/play 次数
         if len(segs) > 2:
             head = segs[0]
-            tail = "，".join(s for s in segs[1:] if s)
+            # 直接拼接：每段本身以句末标点结尾，再加逗号会出现「了。，你」这种双标点
+            tail = "".join(s for s in segs[1:] if s)
             segs = [head, tail] if tail else [head]
         log.info("播报 %d 段：%s", len(segs), " | ".join(segs))
 
@@ -502,9 +633,47 @@ class Speaker:
                     pass
         return None
 
-    # ---------- 播音频 ----------
+    # ---------- 应答音：先应一声，别让用户以为没听见 ----------
+    async def confirm_then_hold(self, filename):
+        """播一句极短的应答音，播完把压制接回来
+
+        为什么需要：走 OpenClaw 时一轮要 12~15 秒才出声，这段时间小爱被
+        pause 按住、我们也没声音，用户听到的是纯静默，会以为没唤醒、于是
+        重复喊一遍，把上一轮直接顶掉（云端记录里同一个问题连问 5 次就是
+        这么来的）。推一段预置 mp3 占住音频通道，既填了静默，也顺带把
+        小爱可能漏出来的开头几个字顶掉。
+
+        注意两点：
+        - play_url 内部会 release_hold 并让 _audio_gen +1，压制循环随之收手，
+          所以播完必须重新 start_hold，否则 agent 那 10 秒全程没人压。
+        - 播的这 1~2 秒里若正式回答已经回来（gen 又变了），就不要再接压制，
+          否则会把刚推上去的播报掐掉。
+        """
+        if not filename:
+            return
+        path = os.path.join(self.static_dir, filename)
+        if not os.path.isfile(path):
+            log.warning("应答音不存在，跳过：%s", path)
+            return
+        gen = self._audio_gen
+        await self.play_url(self.media_url(filename), interrupt=False)
+        dur = mp3_duration(path) or (1.0 + PAD_TAIL)
+        # ★ 小爱推 URL 默认 loop=1（单曲循环），短音频播完不会自己停 —— 不掐就会
+        # 把「好的，稍等」念到天荒地老（2026-11-11 17:35 实测）。这里和 say() 一样：
+        # 音频尾部带 PAD_TAIL 秒静音，按"总长 − 静音"掐断，掐断点落在静音里，
+        # 既不会漏出第二遍开头的字，也不会截断语音。
+        await self._wait_speech(dur - PAD_TAIL)
+        await self.stop()
+        if self._audio_gen != gen + 1:
+            log.info("应答音播完，但已有新音频，不再接压制")
+            return
+        self.start_hold()
+        log.info("应答音播完（%.1fs），继续压制", dur)
+
     async def play_url(self, url, interrupt=True):
-        self._audio_gen += 1          # 通知 stop_burst：已经进入播自己的东西，别再发 stop
+        # 先收手再推流：压制期间在飞的 pause 晚到会把这条播报掐掉
+        await self.release_hold()
+        self._audio_gen += 1          # 通知压制/连发：已经进入播自己的东西，别再发 stop
         if interrupt:
             await self.stop()
             await asyncio.sleep(0.2)

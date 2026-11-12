@@ -28,6 +28,7 @@ class Player:
         self._last_push = 0.0
         self._paused = False
         self._speech_paused = False   # 这次暂停是不是"为了播报"临时按的
+        self.memory = None            # 播放历史与偏好，由 Bridge.start 注入
 
     # ---------- 对外 ----------
     async def play_local(self, query, mode="shuffle", limit=30):
@@ -75,6 +76,9 @@ class Player:
     async def next(self):
         if not self.queue:
             return {"ok": False, "error": "队列为空"}
+        # 切歌先结算上一首：播够久记「听完」，播得短记「跳过」（负反馈）
+        if self.memory:
+            self.memory.record_skip()
         self._paused = False
         self._resume_at = None
         self.cursor += 1
@@ -88,6 +92,8 @@ class Player:
     async def prev(self):
         if not self.queue:
             return {"ok": False, "error": "队列为空"}
+        if self.memory:
+            self.memory.record_skip()
         self._paused = False
         self._resume_at = None
         self.cursor = max(0, self.cursor - 1)
@@ -108,6 +114,8 @@ class Player:
             return {"ok": False, "error": "index 不合法"}
         if not (0 <= index < len(self.queue)):
             return {"ok": False, "error": "超出队列范围"}
+        if self.memory and index != self.cursor:
+            self.memory.record_skip()
         self.cursor = index
         self._paused = False
         self._speech_paused = False
@@ -182,6 +190,8 @@ class Player:
         await self.speaker.play_url(url, interrupt=True)
         self._last_push = time.time()
         dur = duration_of(t.path) or 200
+        if self.memory:
+            self.memory.record_play(t, dur)
         self._set_timer(max(3.0, dur - 0.3))
         log.info("播放 [%d/%d] %s (%.0fs)", self.cursor + 1, len(self.queue), t, dur)
         return {"ok": True, "now": str(t), "index": self.cursor + 1,

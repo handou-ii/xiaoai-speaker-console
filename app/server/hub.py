@@ -26,7 +26,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse, urlsplit, unquote
 
-VERSION = "1.5.8"
+VERSION = "1.5.81"
 
 PORT = int(os.environ.get("HUB_PORT") or 8900)
 # 桌面 iframe 走平台网关时挂在 /app/xiaoai-console/ 前缀下；直连端口则挂在 /
