@@ -285,17 +285,28 @@ def attach(app, bridge, web_dir):
                                   "tags": tagger.tags_of(t) if tagger else None})
 
     # ---------- 打赏 ----------
-    # config.json 是单文件挂载，conf/ 才是整目录挂载 → 收款码必须放 conf 下
+    # 两个来源，conf 优先：
+    #   conf/donate.png          用户自己的收款码（整目录挂载，卸载重装也保留）
+    #   bridge/donate.png        随包带来的那张（作者本人的），装完即可扫码
+    # 之前只认 conf，所以全新安装后卡片是空的，得手工放文件才有内容。
     DONATE_IMG = cfg.abspath("./conf/donate.png")
+    DONATE_BUILTIN = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "donate.png")
+
+    def _donate_file():
+        for p in (DONATE_IMG, DONATE_BUILTIN):
+            if p and os.path.isfile(p):
+                return p
+        return ""
 
     async def api_donate(_request):
-        return web.json_response({"ok": True,
-                                  "has": os.path.isfile(DONATE_IMG)})
+        return web.json_response({"ok": True, "has": bool(_donate_file())})
 
     async def api_donate_qr(_request):
-        if not os.path.isfile(DONATE_IMG):
+        p = _donate_file()
+        if not p:
             raise web.HTTPNotFound()
-        return web.FileResponse(DONATE_IMG)
+        return web.FileResponse(p)
 
     # ---------- AI 模型（直连 OpenAI 兼容端点） ----------
     def _llm_view():
